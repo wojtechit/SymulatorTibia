@@ -88,3 +88,14 @@ Wartości w `monsters.json` pochodzą z ogólnej wiedzy o Tibii i są **przybli�
 `druid_policy.npz`: `W0,b0` (190→128), `W1,b1` (128→128), `W2,b2` (128→13) + `metadata` (JSON: `feature_names`, `action_names`, stałe obserwacji, `env_config`). Inferencja: `argmax(relu(relu(x@W0+b0)@W1+b1)@W2+b2)`. Przy zainstalowanym PyTorch dodatkowo `druid_policy.pt` zgodny z `nn.Sequential(Linear, ReLU, Linear, ReLU, Linear)`.
 
 W `brainstem.py`: wypełnij `GameSnapshot`, przepuść przez `encode_observation()` z `rl_twin/observation.py` (nie przepisuj — kolejność cech musi się zgadzać) i podaj do `BrainstemPolicy.act_name()`. Modele z fazy 1 (119 cech, 7 akcji) nie pasują do fazy 2 — trzeba je wytrenować od nowa.
+
+## Sprite'y (AssetManager)
+
+Przy starcie GUI `rl_twin/assets.py` sprawdza katalog `sprites/` i w tle (QThread) pobiera brakujące obrazki dla Druida i każdego potwora z `monsters.json`:
+`https://tibia.fandom.com/wiki/Special:FilePath/{Nazwa_Z_Podkreślnikami}.gif` (potem `.png`). Druid: `Outfit_Druid_Male.gif`, awaryjnie `Outfit_Druid_Female.gif`.
+
+- Nagłówki przeglądarki (Fandom potrafi odrzucać domyślny User-Agent `python-requests`), timeout 10 s, limit 2 MB, walidacja nagłówka GIF/PNG (strona HTML zamiast obrazka nie zostanie zapisana), zapis atomowy.
+- Nieudane pobrania trafiają do `sprites/_missing.json` i są ponawiane po 24 h — start nie mieli sieci za każdym razem.
+- Brak sprite'a = kółko jak wcześniej. Własna nazwa pliku: pole `"sprite"` w `monsters.json`. Inne źródło: zmienna `TIBIA_SPRITE_BASE_URL`.
+- Bez GUI: `python3 -m rl_twin.assets` (`--force` pobiera ponownie).
+- `sprites/` jest w `.gitignore` — grafiki to własność CipSoft, pobieraj je lokalnie, nie wrzucaj do repo.

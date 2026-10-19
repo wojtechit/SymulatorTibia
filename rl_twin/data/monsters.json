@@ -7,7 +7,8 @@
     "armor": "physical armor; reduces physical damage only (Tibia blockHit rule)",
     "melee": "[min, max] physical melee damage per hit",
     "attack_interval_ms": "time between melee attacks",
-    "elemental_resistances": "damage taken in percent: 100 = neutral, 0 = immune, 120 = 20% weakness, 80 = 20% resistance"
+    "elemental_resistances": "damage taken in percent: 100 = neutral, 0 = immune, 120 = 20% weakness, 80 = 20% resistance",
+    "sprite": "optional TibiaWiki file name; default is {Name_With_Underscores}.gif"
   },
   "_source": "Approximate values from general Tibia knowledge. Verify against TibiaWiki before relying on exact numbers.",
   "monsters": [

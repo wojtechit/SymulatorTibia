@@ -10,7 +10,7 @@ import sys
 
 import numpy as np
 from PyQt5.QtCore import QEvent, QPoint, Qt, QThread, QTimer, pyqtSignal
-from PyQt5.QtGui import QBrush, QColor, QFont, QImage, QPainter, QPainterPath, QPalette, QPen, QPixmap
+from PyQt5.QtGui import QBrush, QColor, QFont, QIcon, QImage, QPainter, QPainterPath, QPalette, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -45,6 +45,7 @@ from PyQt5.QtWidgets import (
 )
 
 from .agent import DQNAgent
+from .assets import AssetManager, sprite_entries
 from .entities import GROUND_FLOOR, Druid
 from .env import (
     ACTION_DOWN,
@@ -77,6 +78,8 @@ MAX_DECISIONS_PER_FRAME = 50
 DEFAULT_GRID = (32, 24)
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAP_FILE = os.path.join(PROJECT_DIR, "map.png")
+SPRITES_DIR = os.path.join(PROJECT_DIR, "sprites")
+SPRITE_SIZE = CELL
 
 TOOL_WAYPOINT = "waypoint"
 TOOL_MONSTER = "monster"
@@ -87,6 +90,80 @@ def format_game_time(ms):
     seconds = ms / 1000.0
     minutes = int(seconds // 60)
     return f"{minutes:02d}:{seconds - minutes * 60:04.1f}"
+
+
+# --------------------------------------------------------------------------- #
+# Sprites
+# --------------------------------------------------------------------------- #
+
+class SpriteStore:
+    """Loads sprites from sprites/ (GIF first frame or PNG), trims transparent margins, fits them to a tile."""
+
+    def __init__(self, manager):
+        self.manager = manager
+        self._cache = {}
+
+    def pixmap(self, name, size=SPRITE_SIZE):
+        key = (name, size)
+        if key not in self._cache:
+            path = self.manager.local_path(name)
+            self._cache[key] = self._load(path, size) if path else None
+        return self._cache[key]
+
+    def invalidate(self, name=None):
+        for key in [k for k in self._cache if name is None or k[0] == name]:
+            del self._cache[key]
+
+    @staticmethod
+    def _load(path, size):
+        image = QImage(path)
+        if image.isNull():
+            return None
+        image = image.convertToFormat(QImage.Format_ARGB32)
+        width, height = image.width(), image.height()
+        buffer = image.constBits()
+        buffer.setsize(image.byteCount())
+        pixels = np.frombuffer(buffer, dtype=np.uint8).reshape(height, image.bytesPerLine())
+        alpha = pixels[:, : width * 4].reshape(height, width, 4)[..., 3]   # ARGB32 in memory: B, G, R, A
+        ys, xs = np.nonzero(alpha)
+        if len(xs):
+            image = image.copy(int(xs.min()), int(ys.min()),
+                               int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1))
+        # Pixel art: smooth only when shrinking, nearest-neighbour when enlarging
+        mode = Qt.SmoothTransformation if max(image.width(), image.height()) > size else Qt.FastTransformation
+        return QPixmap.fromImage(image.scaled(size, size, Qt.KeepAspectRatio, mode))
+
+
+class AssetWorker(QThread):
+    """Runs AssetManager.ensure() off the GUI thread and reports each sprite as it lands."""
+
+    message = pyqtSignal(str)
+    sprite_ready = pyqtSignal(str)
+    summary = pyqtSignal(dict)
+
+    def __init__(self, entries, parent=None):
+        super().__init__(parent)
+        self.entries = entries
+        self._stop_requested = False
+
+    def stop(self):
+        self._stop_requested = True
+
+    def _log(self, text):
+        print(text, flush=True)
+        self.message.emit(text)
+
+    def run(self):
+        manager = AssetManager(SPRITES_DIR, log=self._log)
+        counts = {}
+        for entry in self.entries:
+            if self._stop_requested:
+                break
+            for result in manager.ensure([entry]):
+                counts[result.status] = counts.get(result.status, 0) + 1
+                if result.status == "downloaded":
+                    self.sprite_ready.emit(result.name)
+        self.summary.emit(counts)
 
 
 # --------------------------------------------------------------------------- #
@@ -122,6 +199,7 @@ class GridCanvas(QGraphicsView):
         self.editing_enabled = True
         self.map_path = None
         self.map_cell_px = CELL
+        self.sprites = None          # SpriteStore, set by the main window
 
         self.collision = {}          # z -> np.ndarray (rows, cols) uint8
         self.waypoints = []          # [(x, y, z)]
@@ -251,10 +329,16 @@ class GridCanvas(QGraphicsView):
             item.setBrush(QBrush(QColor(213, 0, 0, 90)))
             item.setPen(QPen(QColor("#ff5252"), 2, Qt.DashLine))
             item.setZValue(2)
-            label = QGraphicsSimpleTextItem(name[:2], item)
-            label.setFont(QFont("Sans", 8, QFont.Bold))
-            label.setBrush(QBrush(QColor("#ffffff")))
-            label.setPos(x * CELL + 8, y * CELL + 8)
+            pixmap = self.sprites.pixmap(name) if self.sprites else None
+            if pixmap is not None:
+                icon = QGraphicsPixmapItem(pixmap, item)
+                icon.setOpacity(0.6)
+                icon.setPos(x * CELL + (CELL - pixmap.width()) / 2, y * CELL + (CELL - pixmap.height()) / 2)
+            else:
+                label = QGraphicsSimpleTextItem(name[:2], item)
+                label.setFont(QFont("Sans", 8, QFont.Bold))
+                label.setBrush(QBrush(QColor("#ffffff")))
+                label.setPos(x * CELL + 8, y * CELL + 8)
             item.setToolTip(f"Spawn: {name} (z={z})")
             self._scene.addItem(item)
             self._spawn_items[(x, y, z)] = item
@@ -380,9 +464,9 @@ class GridCanvas(QGraphicsView):
     def _make_entity(self, color, label, z, mana_bar=False):
         r = CELL / 2 - 4
         body = QGraphicsEllipseItem(-r, -r, 2 * r, 2 * r)
-        body.setBrush(QBrush(color))
-        body.setPen(QPen(color.darker(170), 2))
         body.setZValue(z)
+        item = {"body": body, "name": label, "color": color, "sprite": None, "r": r}
+        self._style_entity(item)
         bg = QGraphicsRectItem(-15, -r - 8, 30, 4, body)
         bg.setBrush(QBrush(QColor("#111")))
         bg.setPen(QPen(Qt.NoPen))
@@ -401,7 +485,42 @@ class GridCanvas(QGraphicsView):
         text.setBrush(QBrush(QColor("#ffffff")))
         text.setPos(-text.boundingRect().width() / 2, -r - 19)
         self._scene.addItem(body)
-        return {"body": body, "hp": hp, "mana": mana, "shield": shield, "r": r}
+        item.update(hp=hp, mana=mana, shield=shield)
+        self._attach_sprite(item)
+        return item
+
+    def _style_entity(self, item):
+        """Solid disc without a sprite; with a sprite only a faint team-coloured base ring."""
+        color = item["color"]
+        if item["sprite"] is None:
+            item["body"].setBrush(QBrush(color))
+            item["body"].setPen(QPen(color.darker(170), 2))
+        else:
+            base = QColor(color)
+            base.setAlpha(60)
+            item["body"].setBrush(QBrush(base))
+            ring = QColor(color)
+            ring.setAlpha(170)
+            item["body"].setPen(QPen(ring, 1.5))
+
+    def _attach_sprite(self, item):
+        if item["sprite"] is not None or self.sprites is None:
+            return
+        pixmap = self.sprites.pixmap(item["name"])
+        if pixmap is None:
+            return
+        sprite = QGraphicsPixmapItem(pixmap, item["body"])
+        sprite.setOffset(-pixmap.width() / 2, -pixmap.height() / 2)
+        sprite.setTransformationMode(Qt.SmoothTransformation)
+        sprite.setZValue(-1)   # above the base disc, below the HP bars and name
+        item["sprite"] = sprite
+        self._style_entity(item)
+
+    def refresh_sprites(self):
+        """Re-apply sprites after new files were downloaded."""
+        for item in ([self._druid_item] if self._druid_item else []) + self._monster_items:
+            self._attach_sprite(item)
+        self._redraw_spawns()
 
     @staticmethod
     def _update_entity(item, x, y, hp_ratio, mana_ratio, shield, visible):
@@ -633,6 +752,10 @@ class MainWindow(QMainWindow):
 
         self.monster_db = MonsterDatabase.load()
         self.monsters_file = None
+        self.asset_manager = AssetManager(SPRITES_DIR, log=print)
+        self.sprite_store = SpriteStore(self.asset_manager)
+        self.asset_worker = None
+        self._sprite_resync = False
         self.agent = DQNAgent()
         self.env = None
         self.obs = None
@@ -647,6 +770,7 @@ class MainWindow(QMainWindow):
         self.visual_timer.timeout.connect(self.on_visual_tick)
 
         self._build_ui()
+        self.canvas.sprites = self.sprite_store
         self._bind_keys()
         self._populate_monsters()
         self._update_preview()
@@ -660,6 +784,7 @@ class MainWindow(QMainWindow):
         else:
             self.log("system", f"Brak map.png - pusta siatka {self.canvas.cols}x{self.canvas.rows} pól.")
         self.log("system", "Narysuj trasę, przeszkody i spawny potworów, potem wybierz tryb pracy.")
+        self.sync_sprites()
 
     # ----- UI construction ------------------------------------------------- #
 
@@ -989,7 +1114,8 @@ class MainWindow(QMainWindow):
         self.monster_combo.blockSignals(True)
         self.monster_combo.clear()
         for name in self.monster_db.names():
-            self.monster_combo.addItem(name, name)
+            icon = self.sprite_store.pixmap(name, 24)
+            self.monster_combo.addItem(QIcon(icon) if icon else QIcon(), name, name)
             self.monster_combo.setItemData(self.monster_combo.count() - 1,
                                            self.monster_db.get(name).describe_pl(), Qt.ToolTipRole)
         index = self.monster_combo.findData(current)
@@ -1306,6 +1432,7 @@ class MainWindow(QMainWindow):
             return
         self.monsters_file = path
         self._populate_monsters()
+        self.sync_sprites()
         self.log("system", f"Wczytano bazę potworów: {os.path.basename(path)} ({len(self.monster_db)} pozycji).")
 
     def save_scenario(self):
@@ -1334,6 +1461,7 @@ class MainWindow(QMainWindow):
             return
         self.monster_db, self.monsters_file = db, config.monsters_file
         self._populate_monsters()
+        self.sync_sprites()
         map_image = data.get("map_image")
         if map_image and os.path.isfile(map_image):
             self.cell_px_input.setValue(int(data.get("map_cell_px", CELL)))
@@ -1353,6 +1481,45 @@ class MainWindow(QMainWindow):
         if index >= 0:
             self.monster_combo.setCurrentIndex(index)
         self.log("system", f"Wczytano scenariusz: {os.path.basename(path)}")
+
+    # ----- sprites --------------------------------------------------------- #
+
+    def sync_sprites(self):
+        """Download missing sprites for the druid and every monster in the database (background thread)."""
+        if self.asset_worker is not None and self.asset_worker.isRunning():
+            self._sprite_resync = True
+            return
+        entries = sprite_entries(self.monster_db)
+        if all(self.asset_manager.local_path(name) for name, _ in entries):
+            self.log("system", f"Sprite'y: komplet {len(entries)} na dysku ({os.path.basename(SPRITES_DIR)}/).")
+            return
+        self.log("system", "Sprite'y: pobieram brakujące obrazki z TibiaWiki w tle…")
+        self.asset_worker = AssetWorker(entries, self)
+        self.asset_worker.message.connect(self._on_asset_message)
+        self.asset_worker.sprite_ready.connect(self._on_sprite_ready)
+        self.asset_worker.summary.connect(self._on_assets_done)
+        self.asset_worker.start()
+
+    def _on_asset_message(self, text):
+        kind = "warn" if text.startswith("[WARN]") else "info"
+        if kind == "warn" or "OK!" in text:
+            self.log(kind, text.split("] ", 1)[-1])
+
+    def _on_sprite_ready(self, name):
+        self.sprite_store.invalidate(name)
+        self.canvas.refresh_sprites()
+        index = self.monster_combo.findData(name)
+        if index >= 0:
+            icon = self.sprite_store.pixmap(name, 24)
+            self.monster_combo.setItemIcon(index, QIcon(icon) if icon else QIcon())
+
+    def _on_assets_done(self, counts):
+        labels = {"downloaded": "pobrane", "cached": "z dysku", "failed": "nieudane", "skipped": "pominięte"}
+        summary = ", ".join(f"{labels.get(k, k)}: {v}" for k, v in counts.items())
+        self.log("system", f"Sprite'y gotowe ({summary}). Brakujące postacie rysuję jako kółka.")
+        if self._sprite_resync:
+            self._sprite_resync = False
+            QTimer.singleShot(0, self.sync_sprites)
 
     # ----- misc ------------------------------------------------------------ #
 
@@ -1394,6 +1561,9 @@ class MainWindow(QMainWindow):
         if self.training:
             self.worker.stop()
             self.worker.wait(5000)
+        if self.asset_worker is not None and self.asset_worker.isRunning():
+            self.asset_worker.stop()
+            self.asset_worker.wait(15000)
         super().closeEvent(event)
 
 

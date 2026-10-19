@@ -23,6 +23,7 @@ class MonsterTemplate:
     melee_min: int = 0
     melee_max: int = 0
     attack_interval_ms: int = 2000
+    sprite: str = None   # TibiaWiki file name override, e.g. "Demon.gif"
 
     def modifier(self, element):
         return self.resistances.get(element, 100) / 100.0
@@ -86,6 +87,7 @@ class MonsterDatabase:
             melee_min=int(melee[0]),
             melee_max=int(melee[1]),
             attack_interval_ms=int(entry.get("attack_interval_ms", 2000)),
+            sprite=entry.get("sprite"),
         )
 
     def names(self):
