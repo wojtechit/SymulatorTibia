@@ -88,11 +88,13 @@ python3 brainstem_example.py druid_policy.npz                                 # 
 ## MapParser (PNG → siatka)
 
 1. Obraz wczytywany jako RGBA (Pillow, awaryjnie Qt `QImage`).
-2. Piksel jest blokujący, gdy jego kolor mieści się w tolerancji (maks. różnica na kanał) od `#000000` lub `#0000FF`, albo gdy jest przezroczysty.
-3. Obraz dzielony na kafle `piksele na pole × piksele na pole` (32 dla zrzutu z klienta, 1 dla eksportu minimapy).
-4. Kafel = przeszkoda (1), gdy blokujących pikseli jest ≥ progu zajętości (domyślnie 50%); reszta = 0.
+2. Piksel jest ścianą, gdy **każdy** kanał RGB jest poniżej „Progu czerni” (domyślnie 20 — czerń `#000000` razem z szumem kompresji), gdy jest przezroczysty, albo gdy jest czystym niebieskim `#0000FF` (±60).
+3. „Piksele na pole” = **auto**: obraz z ≤ 256 kolorami to minimapa Tibii → 1 px = 1 pole; więcej kolorów = zrzut klienta → 32 px. Minimapę zapisaną jako JPEG (szum = tysiące kolorów) ustaw ręcznie na 1.
+4. Przy 1 px/pole każdy ciemny piksel jest ścianą; przy większych kaflach decyduje „Próg zajętości”.
 
-Kolizje są trzymane per piętro Z (Tibia: 7 = parter); GUI pokazuje jedno piętro naraz. Ręcznie malowane przeszkody i wynik parsera trafiają do tej samej siatki.
+Mapa PNG należy do piętra, na którym ją wczytano — na innych piętrach tło jest ukryte, a ich kolizje są osobne. Scenariusz zapisuje `map_floor`; przy wczytaniu scenariusza bez kolizji mapa jest parsowana ponownie. Przed epizodem/treningiem GUI ostrzega, jeśli piętro startowe nie ma ani jednej ściany.
+
+Ruch druida: `env._movement_blocker()` odrzuca pole poza siatką, ścianę (`1`) i pole zajęte przez potwora — druid zostaje na miejscu, zegar idzie 100 ms, kara −0.5. Obserwacja ma kierunek do punktu trasy zarówno w linii prostej (`waypoint_dx/dy`), jak i **po najkrótszej ścieżce omijającej ściany** (`waypoint_path_dx/dy`, `waypoint_path_distance`; Dijkstra, liczony raz na punkt trasy).
 
 ## Dane potworów
 
@@ -100,9 +102,9 @@ Wartości w `monsters.json` pochodzą z ogólnej wiedzy o Tibii i są **przybli�
 
 ## Format eksportu modelu
 
-`druid_policy.npz`: `W0,b0` (287→128), `W1,b1` (128→128), `W2,b2` (128→14) + `metadata` (JSON: `feature_names`, `action_names`, stałe obserwacji, `env_config`). Inferencja: `argmax(relu(relu(x@W0+b0)@W1+b1)@W2+b2)`. Przy zainstalowanym PyTorch dodatkowo `druid_policy.pt` zgodny z `nn.Sequential(Linear, ReLU, Linear, ReLU, Linear)`.
+`druid_policy.npz`: `W0,b0` (290→128), `W1,b1` (128→128), `W2,b2` (128→14) + `metadata` (JSON: `feature_names`, `action_names`, stałe obserwacji, `env_config`). Inferencja: `argmax(relu(relu(x@W0+b0)@W1+b1)@W2+b2)`. Przy zainstalowanym PyTorch dodatkowo `druid_policy.pt` zgodny z `nn.Sequential(Linear, ReLU, Linear, ReLU, Linear)`.
 
-W `brainstem.py`: wypełnij `GameSnapshot`, przepuść przez `encode_observation()` z `rl_twin/observation.py` (nie przepisuj — kolejność cech musi się zgadzać) i podaj do `BrainstemPolicy.act_name()`. Modele z wcześniejszych faz (119/7, 190/13, 198/14) nie pasują do fazy 4 (287 cech, 14 akcji) — trzeba je wytrenować od nowa. Mapę zagrożenia w `brainstem.py` licz tą samą funkcją `rl_twin.aoe.danger_window` (pozycje i kierunki potworów + czary z `monsters.json`).
+W `brainstem.py`: wypełnij `GameSnapshot`, przepuść przez `encode_observation()` z `rl_twin/observation.py` (nie przepisuj — kolejność cech musi się zgadzać) i podaj do `BrainstemPolicy.act_name()`. Modele z wcześniejszych faz (119/7, 190/13, 198/14) nie pasują do obecnej wersji (290 cech, 14 akcji) — trzeba je wytrenować od nowa. Mapę zagrożenia w `brainstem.py` licz tą samą funkcją `rl_twin.aoe.danger_window` (pozycje i kierunki potworów + czary z `monsters.json`).
 
 ## Sprite'y (AssetManager)
 

@@ -4,8 +4,12 @@ Grid physics: Tibia step timing, 8-way movement with diagonal cost, A*, line of 
 Grids are indexed grid[y][x]; 1 = blocked, 0 = walkable. Pure Python/numpy, no Qt.
 """
 
+import hashlib
 import heapq
 import math
+from collections import OrderedDict
+
+import numpy as np
 
 SERVER_TICK_MS = 50
 DEFAULT_GROUND_SPEED = 150          # grass; ground speed of the tile being entered
@@ -77,6 +81,63 @@ def has_line_of_sight(grid, x0, y0, x1, y1):
         if (x, y) != (x1, y1) and not is_walkable(grid, x, y):
             return False
     return True
+
+
+_field_cache = OrderedDict()
+FIELD_CACHE_SIZE = 64
+
+
+def distance_field(collision, goal, diagonal_cost=DEFAULT_DIAGONAL_MULTIPLIER):
+    """
+    Dijkstra travel cost from every tile to `goal` (x, y) on an 8-connected grid, walls = inf.
+    Cached per (map contents, goal, cost), so each waypoint is solved once per map.
+    """
+    collision = np.ascontiguousarray(collision, dtype=np.uint8)
+    key = (hashlib.blake2b(collision.tobytes(), digest_size=16).hexdigest(), collision.shape,
+           tuple(goal), float(diagonal_cost))
+    if key in _field_cache:
+        _field_cache.move_to_end(key)
+        return _field_cache[key]
+    rows, cols = collision.shape
+    walls = collision.tolist()
+    field = [[math.inf] * cols for _ in range(rows)]
+    gx, gy = goal
+    if 0 <= gx < cols and 0 <= gy < rows and not walls[gy][gx]:
+        field[gy][gx] = 0.0
+        heap = [(0.0, gx, gy)]
+        while heap:
+            cost, x, y = heapq.heappop(heap)
+            if cost > field[y][x]:
+                continue
+            for dx, dy in DIRECTIONS_8:
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < cols and 0 <= ny < rows and not walls[ny][nx]:
+                    new_cost = cost + (diagonal_cost if dx and dy else 1.0)
+                    if new_cost < field[ny][nx]:
+                        field[ny][nx] = new_cost
+                        heapq.heappush(heap, (new_cost, nx, ny))
+    result = np.array(field, dtype=np.float32)
+    _field_cache[key] = result
+    if len(_field_cache) > FIELD_CACHE_SIZE:
+        _field_cache.popitem(last=False)
+    return result
+
+
+def path_direction(field, x, y, diagonal_cost=DEFAULT_DIAGONAL_MULTIPLIER):
+    """(dx, dy, cost): first step of the shortest path toward the field's goal; (0, 0, inf) if unreachable."""
+    rows, cols = field.shape
+    here = float(field[y, x]) if 0 <= x < cols and 0 <= y < rows else math.inf
+    if here == 0.0 or math.isinf(here):
+        return 0, 0, here
+    best = (0, 0, here)
+    best_total = math.inf
+    for dx, dy in DIRECTIONS_8:
+        nx, ny = x + dx, y + dy
+        if 0 <= nx < cols and 0 <= ny < rows:
+            total = float(field[ny, nx]) + (diagonal_cost if dx and dy else 1.0)
+            if total < best_total:
+                best_total, best = total, (dx, dy, here)
+    return best
 
 
 def a_star(grid, start, target, occupied=frozenset(), adjacent_goal=True,

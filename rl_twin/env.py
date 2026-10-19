@@ -29,9 +29,11 @@ from .physics import (
     SERVER_TICK_MS,
     a_star,
     chebyshev,
+    distance_field,
     has_line_of_sight,
     in_view,
     is_diagonal,
+    path_direction,
 )
 
 DECISION_MS = 100          # game time consumed by a non-movement action
@@ -172,6 +174,7 @@ class DruidHuntEnv:
         self.rng = random.Random(self.config.seed)
         self.grids = {}          # z -> np.ndarray, built lazily
         self._grid_lists = {}    # z -> list of lists for fast A* / LOS
+        self._waypoint_fields = {}   # waypoint index -> distance field (static map, solved once)
         self.waypoints = [tuple(int(v) for v in w[:3]) for w in self.config.waypoints]
         self.waypoints = [w for w in self.waypoints if self._walkable_static(*w)]
         self.druid = None
@@ -249,7 +252,10 @@ class DruidHuntEnv:
         if action in MOVE_DELTAS:
             dx, dy = MOVE_DELTAS[action]
             nx, ny = druid.x + dx, druid.y + dy
-            if not self._is_free(nx, ny, druid.z):
+            blocked = self._movement_blocker(nx, ny, druid.z)
+            if blocked is not None:
+                # Rejected: the druid stays put, the clock still advances, invalid-action penalty
+                self._event("info", f"Ruch zablokowany ({blocked}) na ({nx}, {ny}).")
                 return rewards.invalid_action, DECISION_MS
             druid.move_to(nx, ny)
             duration = self._step_duration(druid, is_diagonal(dx, dy))
@@ -483,6 +489,18 @@ class DruidHuntEnv:
     def _walkable_static(self, x, y, z):
         return 0 <= x < self.config.cols and 0 <= y < self.config.rows and not self.collision(z)[y, x]
 
+    def _movement_blocker(self, x, y, z):
+        """Why the druid cannot enter (x, y, z), or None when the tile is free."""
+        grid = self.collision(z)
+        rows, cols = grid.shape
+        if not (0 <= x < cols and 0 <= y < rows):
+            return "poza mapą"
+        if grid[y, x]:
+            return "ściana"
+        if any(m.alive and m.position == (x, y, z) for m in self.monsters):
+            return "potwór"
+        return None
+
     def _is_free(self, x, y, z, ignore=None):
         if not self._walkable_static(x, y, z):
             return False
@@ -578,6 +596,7 @@ class DruidHuntEnv:
                 spell_cooldown_ratio=self._spell_cooldown_ratio(m, now),
             ) for m in self.monsters if m.alive],
             next_waypoint=self.waypoints[self.waypoint_index] if self.waypoints else None,
+            waypoint_path=self._waypoint_path(),
             danger=danger_window(
                 druid.x, druid.y, VIEW_RADIUS,
                 [(m.x, m.y, m.facing, m.directional_spells) for m in self.monsters
@@ -585,6 +604,20 @@ class DruidHuntEnv:
                  and in_view(m.x, m.y, druid.x, druid.y)],
                 self.collision(druid.z), grid),
         )
+
+    def _waypoint_path(self):
+        """First step and travel cost along the shortest path to the next waypoint (same floor only)."""
+        if not self.waypoints:
+            return None
+        druid = self.druid
+        wx, wy, wz = self.waypoints[self.waypoint_index]
+        if wz != druid.z:
+            return None
+        field = self._waypoint_fields.get(self.waypoint_index)
+        if field is None:
+            field = distance_field(self.collision(wz), (wx, wy), self.config.diagonal_multiplier)
+            self._waypoint_fields[self.waypoint_index] = field
+        return path_direction(field, druid.x, druid.y, self.config.diagonal_multiplier)
 
     @staticmethod
     def _spell_cooldown_ratio(monster, now):

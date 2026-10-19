@@ -14,6 +14,7 @@ from .physics import VIEW_RANGE_X, VIEW_RANGE_Y, chebyshev
 VIEW_RADIUS = 4           # local window: (2 * VIEW_RADIUS + 1) ** 2 cells per channel
 POTION_NORMALIZER = 100   # potions_left saturates at this count
 RUNE_NORMALIZER = 100     # sd_runes_left saturates at this count
+PATH_NORMALIZER = 100.0   # waypoint_path_distance saturates at this travel cost
 STEP_MS_NORMALIZER = 1000.0
 MODIFIER_NORMALIZER = 200.0
 
@@ -43,6 +44,7 @@ SCALAR_FEATURES = [
     "monster_in_rod_range", "monster_in_rune_range", "monster_death_modifier", "monster_rod_modifier",
     "monster_facing_dx", "monster_facing_dy", "aligned_horizontal", "aligned_vertical", "aligned_diagonal",
     "monster_has_aoe", "monster_spell_cooldown", "danger_here",
+    "waypoint_path_dx", "waypoint_path_dy", "waypoint_path_distance",
 ]
 _WINDOW = [(dx, dy) for dy in range(-VIEW_RADIUS, VIEW_RADIUS + 1)
            for dx in range(-VIEW_RADIUS, VIEW_RADIUS + 1)]
@@ -96,6 +98,7 @@ class GameSnapshot:
     monsters: list = field(default_factory=list)   # alive MonsterView, any floor
     next_waypoint: tuple = None    # (x, y, z) or None
     danger: np.ndarray = None      # (2r+1, 2r+1) beam/wave threat map from aoe.danger_window, or None
+    waypoint_path: tuple = None    # (dx, dy, cost) from physics.path_direction toward the next waypoint
 
 
 def _visible(snap, m):
@@ -162,6 +165,12 @@ def encode_observation(snap):
         obs[42] = nearest.spell_cooldown_ratio
     if snap.danger is not None:
         obs[43] = snap.danger[VIEW_RADIUS, VIEW_RADIUS]
+    # Shortest-path step toward the waypoint (walls respected) - tells the agent how to leave a dead end
+    if snap.waypoint_path is not None:
+        step_x, step_y, cost = snap.waypoint_path
+        obs[44] = step_x
+        obs[45] = step_y
+        obs[46] = 1.0 if cost == float("inf") else min(cost, PATH_NORMALIZER) / PATH_NORMALIZER
 
     # Local window, out-of-bounds counts as blocked
     r = VIEW_RADIUS

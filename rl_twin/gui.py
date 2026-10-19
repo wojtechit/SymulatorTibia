@@ -207,6 +207,7 @@ class GridCanvas(QGraphicsView):
         self.editing_enabled = True
         self.map_path = None
         self.map_cell_px = CELL
+        self.map_floor = None        # floor the background image (and its parsed walls) belongs to
         self.sprites = None          # SpriteStore, set by the main window
 
         self.collision = {}          # z -> np.ndarray (rows, cols) uint8
@@ -253,6 +254,8 @@ class GridCanvas(QGraphicsView):
 
     def set_floor(self, z):
         self.floor = int(z)
+        if self._map_item is not None:
+            self._map_item.setVisible(self.map_floor is None or self.map_floor == self.floor)
         self.refresh()
 
     def refresh(self):
@@ -261,8 +264,8 @@ class GridCanvas(QGraphicsView):
         self._redraw_waypoints()
         self.scenario_changed.emit()
 
-    def load_map(self, path, cell_px, parser=None):
-        """Show the image as background; with a parser, replace this floor's collision with the parsed grid."""
+    def load_map(self, path, cell_px, grid=None):
+        """Show the image as background of the current floor; `grid` (parsed walls) replaces that floor's collision."""
         if self._map_item is not None:
             self._scene.removeItem(self._map_item)
             self._map_item = None
@@ -276,14 +279,15 @@ class GridCanvas(QGraphicsView):
         self._map_item.setZValue(-10)
         self._map_item.setScale(CELL / cell_px)
         self._scene.addItem(self._map_item)
+        self.map_floor = self.floor
         self.resize_grid(max(1, pixmap.width() // cell_px), max(1, pixmap.height() // cell_px))
-        parsed = np.zeros((self.rows, self.cols), dtype=np.uint8)
-        if parser is not None:
-            parsed = parser.to_grid(load_rgba(path))
-            self.collision[self.floor] = parsed
+        if grid is not None:
+            if grid.shape != (self.rows, self.cols):
+                raise ValueError(f"Parsed grid {grid.shape} does not match the map {self.rows}x{self.cols}")
+            self.collision[self.floor] = grid.astype(np.uint8)
             self.refresh()
         self.centerOn(self._scene.sceneRect().center())
-        return parsed
+        return self.collision.get(self.floor)
 
     def _render_overlay(self):
         grid = self.grid()
@@ -957,11 +961,14 @@ class MainWindow(QMainWindow):
         self.random_monsters_input.setToolTip("Używane tylko, gdy na mapie nie ma spawnów")
         self.floor_input = self._spin(0, 15, GROUND_FLOOR)
         self.floor_input.setToolTip("Piętro Z (Tibia: 7 = poziom gruntu)")
-        self.floor_input.valueChanged.connect(lambda z: self.canvas.set_floor(z))
-        self.cell_px_input = self._spin(1, 256, CELL)
-        self.cell_px_input.setToolTip("Ile pikseli PNG przypada na jedno pole (1 dla minimapy Tibii)")
-        self.tolerance_input = self._spin(0, 255, 40)
-        self.tolerance_input.setToolTip("Maks. różnica na kanał RGB od #000000 / #0000FF")
+        self.floor_input.valueChanged.connect(self._on_floor_changed)
+        self.cell_px_input = self._spin(0, 256, 0)
+        self.cell_px_input.setSpecialValueText("auto")
+        self.cell_px_input.setToolTip("Ile pikseli PNG przypada na jedno pole. auto: minimapa Tibii = 1, "
+                                      "zrzut ekranu klienta = 32")
+        self.tolerance_input = self._spin(1, 255, 20)
+        self.tolerance_input.setToolTip("Piksel jest ścianą, gdy KAŻDY kanał RGB jest poniżej tej wartości "
+                                        "(czerń #000000 i ciemny szum). Przezroczystość też = ściana.")
         self.fraction_input = self._spin(1, 100, 50)
         self.fraction_input.setSuffix(" %")
         self.diagonal_input = QDoubleSpinBox()
@@ -974,7 +981,7 @@ class MainWindow(QMainWindow):
         self.ground_speed_input.valueChanged.connect(self._update_preview)
         fields = [("Potwór:", self.monster_combo), ("Losowe potwory:", self.random_monsters_input),
                   ("Piętro (Z):", self.floor_input), ("Piksele na pole:", self.cell_px_input),
-                  ("Tolerancja koloru:", self.tolerance_input), ("Próg zajętości:", self.fraction_input),
+                  ("Próg czerni:", self.tolerance_input), ("Próg zajętości:", self.fraction_input),
                   ("Mnożnik ukosu:", self.diagonal_input), ("Prędkość podłoża:", self.ground_speed_input)]
         for i, (text, widget) in enumerate(fields):
             row, col = divmod(i, 2)
@@ -1284,6 +1291,7 @@ class MainWindow(QMainWindow):
 
     def _new_manual_episode(self):
         config = self.build_config()
+        self._warn_if_no_walls(config)
         if not self.agent_control_checkbox.isChecked():
             # Keyboard play: idle 100 ms waits are decisions too, so the training limit would end it early
             config.max_steps = 10 ** 9
@@ -1384,6 +1392,7 @@ class MainWindow(QMainWindow):
 
     def start_training(self):
         config = self.build_config()
+        self._warn_if_no_walls(config)
         try:
             DruidHuntEnv(config, monster_db=self.monster_db).reset()
         except ValueError as exc:
@@ -1472,24 +1481,35 @@ class MainWindow(QMainWindow):
     # ----- map, database, scenario files ----------------------------------- #
 
     def _parser(self):
-        tolerance = self.tolerance_input.value()
-        rules = (ColorRule("Pustka / ściana (#000000)", (0, 0, 0), tolerance),
-                 ColorRule("Woda (#0000FF)", (0, 0, 255), tolerance))
-        return MapParser(rules, cell_px=self.cell_px_input.value(),
+        cell_px = self.cell_px_input.value() or None   # 0 = auto
+        return MapParser(cell_px=cell_px, dark_threshold=self.tolerance_input.value(),
+                         rules=(ColorRule("Woda (#0000FF)", (0, 0, 255), 60),),
                          blocked_fraction=self.fraction_input.value() / 100.0)
 
     def load_map_file(self, path):
+        """Parse walls first, then show the image; a failed parse leaves the previous map untouched."""
+        name = os.path.basename(path)
+        parser = self._parser()
         try:
-            parsed = self.canvas.load_map(path, self.cell_px_input.value(), self._parser())
-        except (OSError, ValueError) as exc:
-            self.log("warn", f"Nie udało się sparsować mapy: {exc}")
-            return
-        if parsed is None:
-            self.log("warn", f"Nie udało się wczytać mapy: {os.path.basename(path)}")
-            return
-        self.log("system", f"Wczytano mapę {os.path.basename(path)}: siatka {self.canvas.cols}x{self.canvas.rows}, "
-                           f"zablokowane pola: {int(parsed.sum())} ({parsed.mean() * 100:.1f}%), "
+            grid = parser.to_grid(load_rgba(path))
+            loaded = self.canvas.load_map(path, parser.last_cell_px, grid)
+        except Exception as exc:  # any decoder/shape problem must be visible, never a silent 0-wall map
+            self.log("warn", f"Nie udało się sparsować mapy {name}: {exc}")
+            QMessageBox.warning(self, "Błąd mapy", f"Nie udało się sparsować mapy {name}:\n{exc}")
+            return False
+        if loaded is None:
+            self.log("warn", f"Qt nie potrafi wyświetlić obrazu {name}.")
+            return False
+        kind = "minimapa (1 px = 1 pole)" if parser.last_was_minimap else "zrzut ekranu"
+        walls = int(grid.sum())
+        self.log("system", f"Wczytano mapę {name}: {kind}, {parser.last_cell_px} px/pole, siatka "
+                           f"{self.canvas.cols}x{self.canvas.rows}, ściany: {walls} ({grid.mean() * 100:.1f}%), "
                            f"piętro {self.canvas.floor}.")
+        if walls == 0:
+            self.log("warn", "Parser nie znalazł żadnej ściany - podnieś 'Próg czerni' albo sprawdź 'Piksele na pole'.")
+        elif walls == grid.size:
+            self.log("warn", "Cała mapa jest ścianą - obniż 'Próg czerni' albo ustaw 'Piksele na pole' na auto/1.")
+        return True
 
     def load_map_dialog(self):
         path, _ = QFileDialog.getOpenFileName(self, "Wczytaj mapę", PROJECT_DIR,
@@ -1526,6 +1546,7 @@ class MainWindow(QMainWindow):
         data = self.build_config().to_dict()
         data["map_image"] = self.canvas.map_path
         data["map_cell_px"] = self.canvas.map_cell_px
+        data["map_floor"] = self.canvas.map_floor
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(data, handle, ensure_ascii=False, indent=2)
         self.log("system", f"Zapisano scenariusz: {os.path.basename(path)}")
@@ -1546,10 +1567,19 @@ class MainWindow(QMainWindow):
         self._populate_monsters()
         self.sync_sprites()
         map_image = data.get("map_image")
+        map_floor = int(data.get("map_floor") if data.get("map_floor") is not None else config.floor)
+        self.floor_input.setValue(map_floor)
         if map_image and os.path.isfile(map_image):
             self.cell_px_input.setValue(int(data.get("map_cell_px", CELL)))
             self.canvas.load_map(map_image, self.cell_px_input.value())
         self.canvas.apply_config(config)
+        if map_image and os.path.isfile(map_image) and str(map_floor) not in config.collision:
+            self.log("warn", f"Scenariusz nie ma kolizji dla piętra {map_floor} - parsuję mapę {os.path.basename(map_image)}.")
+            self.canvas.set_floor(map_floor)
+            waypoints, spawns = list(self.canvas.waypoints), dict(self.canvas.spawns)
+            self.load_map_file(map_image)
+            self.canvas.waypoints, self.canvas.spawns = waypoints, spawns
+            self.canvas.refresh()
         self.floor_input.setValue(config.floor)
         self.level_input.setValue(config.level)
         self.magic_input.setValue(config.magic_level)
@@ -1566,6 +1596,21 @@ class MainWindow(QMainWindow):
         if index >= 0:
             self.monster_combo.setCurrentIndex(index)
         self.log("system", f"Wczytano scenariusz: {os.path.basename(path)}")
+
+    def _on_floor_changed(self, z):
+        self.canvas.set_floor(z)
+        c = self.canvas
+        if c.map_path and c.map_floor is not None and c.map_floor != z:
+            self.log("warn", f"Mapa {os.path.basename(c.map_path)} należy do piętra {c.map_floor}. "
+                             f"Piętro {z}: kolizje {int(c.grid().sum())} - wczytaj osobny PNG dla tego piętra.")
+
+    def _warn_if_no_walls(self, config):
+        """Called before an episode: a loaded map whose start floor has no walls is almost always a mistake."""
+        start_floor = int(config.waypoints[0][2]) if config.waypoints else config.floor
+        walls = sum(row.count("1") for row in config.collision.get(str(start_floor), []))
+        if self.canvas.map_path and walls == 0:
+            self.log("warn", f"UWAGA: piętro {start_floor} nie ma ani jednej ściany, a mapa jest wczytana "
+                             f"(piętro mapy: {self.canvas.map_floor}). Druid będzie chodził po czarnej pustce.")
 
     # ----- sprites --------------------------------------------------------- #
 
