@@ -15,7 +15,9 @@ runs in a QThread or from the command line:
 
 import json
 import os
+import re
 import time
+from urllib.parse import quote
 from dataclasses import dataclass
 
 try:
@@ -34,6 +36,12 @@ DEFAULT_HEADERS = {
 }
 IMAGE_EXTENSIONS = (".gif", ".png")
 MISSING_INDEX = "_missing.json"
+SOURCES_VERSION = 2   # bump when sources change: older failure records are ignored and retried
+TIBIA_COM_LIBRARY = "https://static.tibia.com/images/library/"
+TIBIA_COM_OUTFITS = "https://static.tibia.com/images/charactertrade/outfits/"
+FANDOM_API = "https://tibia.fandom.com/api.php"
+# Official outfit looktypes used for the druid icon (male / female druid outfit, then mage)
+CHARACTER_OUTFITS = {"Druid": ("144_0.gif", "148_0.gif", "130_0.gif")}
 RETRY_MISSING_AFTER_S = 24 * 3600
 MAX_DOWNLOAD_BYTES = 2_000_000
 
@@ -85,13 +93,45 @@ class AssetManager:
         return None
 
     def candidates(self, name, sprite_hint=None):
-        """Remote file names to try, most specific first."""
-        if sprite_hint:
+        """Remote TibiaWiki file names to try, most specific first."""
+        if sprite_hint and not str(sprite_hint).startswith("http"):
             return [sprite_hint] if isinstance(sprite_hint, str) else list(sprite_hint)
         if name in CHARACTER_SPRITES:
             return list(CHARACTER_SPRITES[name])
         stem = wiki_file_name(name)
         return [stem + ".gif", stem + ".png"]
+
+    def candidate_urls(self, name, sprite_hint=None):
+        """
+        (label, url_or_callable) in priority order:
+          1. explicit URL from monsters.json "sprite"
+          2. tibia.com official creature library / outfit images (no bot protection)
+          3. TibiaWiki MediaWiki API (resolves the direct static-file URL)
+          4. TibiaWiki Special:FilePath (the original method)
+        """
+        urls = []
+        if sprite_hint and str(sprite_hint).startswith("http"):
+            urls.append(("URL z monsters.json", sprite_hint))
+        if name in CHARACTER_OUTFITS:
+            urls += [(f"tibia.com outfit {f}", TIBIA_COM_OUTFITS + f) for f in CHARACTER_OUTFITS[name]]
+        else:
+            slug = re.sub(r"[^a-z0-9]", "", name.lower())
+            urls.append(("tibia.com library", f"{TIBIA_COM_LIBRARY}{slug}.gif"))
+        for file_name in self.candidates(name, sprite_hint):
+            urls.append((f"TibiaWiki API {file_name}", lambda f=file_name: self._resolve_via_api(f)))
+            urls.append((f"TibiaWiki {file_name}", self.base_url + quote(file_name)))
+        return urls
+
+    def _resolve_via_api(self, file_name):
+        response = self.session.get(FANDOM_API, timeout=self.timeout, params={
+            "action": "query", "titles": f"File:{file_name}", "prop": "imageinfo",
+            "iiprop": "url", "format": "json"})
+        response.raise_for_status()
+        for page in response.json().get("query", {}).get("pages", {}).values():
+            info = page.get("imageinfo")
+            if info:
+                return info[0]["url"]
+        raise ValueError("brak pliku na wiki")
 
     # ----- downloading ----------------------------------------------------- #
 
@@ -110,7 +150,7 @@ class AssetManager:
                 results.append(DownloadResult(name, "cached", existing))
                 continue
             failed_at = missing.get(name)
-            if failed_at and not force and time.time() - failed_at < RETRY_MISSING_AFTER_S:
+            if failed_at is not None and not force and time.time() - failed_at < RETRY_MISSING_AFTER_S:
                 results.append(DownloadResult(name, "skipped", None, "niedawno nieudane - pomijam"))
                 continue
             result = self.fetch(name, hint)
@@ -127,10 +167,10 @@ class AssetManager:
             self.log(f"[WARN] Brak biblioteki 'requests' - pomijam pobieranie {name}.")
             return DownloadResult(name, "failed", None, "brak requests")
         errors = []
-        for remote_name in self.candidates(name, sprite_hint):
-            url = self.base_url + remote_name
+        for remote_name, source in self.candidate_urls(name, sprite_hint):
             self.log(f"[INFO] Pobieranie obrazka dla {name} ({remote_name})...")
             try:
+                url = source() if callable(source) else source
                 data = self._download(url)
             except requests.Timeout:
                 errors.append(f"{remote_name}: przekroczono czas ({self.timeout:g} s)")
@@ -197,14 +237,16 @@ class AssetManager:
         try:
             with open(self._missing_index_path(), encoding="utf-8") as handle:
                 data = json.load(handle)
-            return {str(k): float(v) for k, v in data.items()}
+            # Only failures recorded with the current source list count; older ones are retried
+            return {str(k): float(v["time"]) for k, v in data.items()
+                    if isinstance(v, dict) and v.get("version") == SOURCES_VERSION}
         except (OSError, ValueError, AttributeError):
             return {}
 
     def _write_missing_index(self, missing):
         try:
             with open(self._missing_index_path(), "w", encoding="utf-8") as handle:
-                json.dump(missing, handle, indent=2)
+                json.dump({k: {"time": t, "version": SOURCES_VERSION} for k, t in missing.items()}, handle, indent=2)
         except OSError:
             pass
 

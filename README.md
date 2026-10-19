@@ -88,13 +88,15 @@ python3 brainstem_example.py druid_policy.npz                                 # 
 ## MapParser (PNG → siatka)
 
 1. Obraz wczytywany jako RGBA (Pillow, awaryjnie Qt `QImage`).
-2. Piksel jest ścianą, gdy **każdy** kanał RGB jest poniżej „Progu czerni” (domyślnie 20 — czerń `#000000` razem z szumem kompresji), gdy jest przezroczysty, albo gdy jest czystym niebieskim `#0000FF` (±60).
-3. „Piksele na pole” = **auto**: obraz z ≤ 256 kolorami to minimapa Tibii → 1 px = 1 pole; więcej kolorów = zrzut klienta → 32 px. Minimapę zapisaną jako JPEG (szum = tysiące kolorów) ustaw ręcznie na 1.
-4. Przy 1 px/pole każdy ciemny piksel jest ścianą; przy większych kaflach decyduje „Próg zajętości”.
+2. Ściana = piksel ciemny (każdy kanał < „Próg czerni”, domyślnie 20), przezroczysty, albo w kolorze oznaczonym jako ściana. Domyślne ściany z palety minimapy Tibii: pustka, ściana jaskini/góra `(153,51,0)`, skały `(102,102,102)`, woda `(51,102,153)`, mur `(255,51,0)`, lawa, drzewa. Po wczytaniu mapy lista „Kolory mapy” pokazuje wszystkie kolory z udziałem % — zaznaczenie/odznaczenie od razu przelicza kolizje.
+3. „Piksele na pole” = **auto**: minimapa (≤ 256 kolorów) → skala = największe s dzielące ≥ 90% długości jednokolorowych odcinków (np. zrzut minimapy powiększony 3× → 3 px = 1 pole) i przesunięcie siatki z fazy zmian koloru; zrzut klienta → 32 px. Ręczna wartość wyłącza auto.
+4. Przy większych kaflach decyduje „Próg zajętości”.
 
-Mapa PNG należy do piętra, na którym ją wczytano — na innych piętrach tło jest ukryte, a ich kolizje są osobne. Scenariusz zapisuje `map_floor`; przy wczytaniu scenariusza bez kolizji mapa jest parsowana ponownie. Przed epizodem/treningiem GUI ostrzega, jeśli piętro startowe nie ma ani jednej ściany.
+Mapa PNG należy do piętra, na którym ją wczytano (tło ukryte na innych). Scenariusz zapisuje `map_floor`, `map_cell_px`, `map_offset`, `map_wall_colors`; bez kolizji mapa jest parsowana ponownie.
 
-Ruch druida: `env._movement_blocker()` odrzuca pole poza siatką, ścianę (`1`) i pole zajęte przez potwora — druid zostaje na miejscu, zegar idzie 100 ms, kara −0.5. Obserwacja ma kierunek do punktu trasy zarówno w linii prostej (`waypoint_dx/dy`), jak i **po najkrótszej ścieżce omijającej ściany** (`waypoint_path_dx/dy`, `waypoint_path_distance`; Dijkstra, liczony raz na punkt trasy).
+Edycja: narzędzie **Przesuń** (chwyć spawn/punkt trasy i upuść; ściana/zajęte pole = odmowa), **PPM na znaczniku** usuwa dokładnie ten znacznik, przycisk „Usuń potwory (piętro)”. Znaczniki mają stały rozmiar na ekranie, a postacie nie maleją poniżej ~20 px przy oddaleniu. Po końcu epizodu figury z symulacji znikają — zostają tylko edytowalne spawny.
+
+Ruch druida: `env._movement_blocker()` odrzuca pole poza siatką, ścianę i pole z potworem — druid zostaje, zegar +100 ms, kara −0.5. Kierunek do punktu trasy: w linii prostej i po najkrótszej ścieżce omijającej ściany (`waypoint_path_*`).
 
 ## Dane potworów
 
@@ -108,11 +110,10 @@ W `brainstem.py`: wypełnij `GameSnapshot`, przepuść przez `encode_observation
 
 ## Sprite'y (AssetManager)
 
-Przy starcie GUI `rl_twin/assets.py` sprawdza katalog `sprites/` i w tle (QThread) pobiera brakujące obrazki dla Druida i każdego potwora z `monsters.json`:
-`https://tibia.fandom.com/wiki/Special:FilePath/{Nazwa_Z_Podkreślnikami}.gif` (potem `.png`). Druid: `Outfit_Druid_Male.gif`, awaryjnie `Outfit_Druid_Female.gif`.
+Przy starcie GUI brakujące obrazki są pobierane w tle, z kilku źródeł po kolei:
+1. pole `"sprite"` w `monsters.json`, jeśli to pełny URL,
+2. oficjalna biblioteka tibia.com: `static.tibia.com/images/library/{nazwa}.gif` (druid: obrazy strojów `charactertrade/outfits/144_0.gif`, `148_0.gif`, `130_0.gif`),
+3. API TibiaWiki (`api.php` → bezpośredni link do pliku),
+4. TibiaWiki `Special:FilePath`.
 
-- Nagłówki przeglądarki (Fandom potrafi odrzucać domyślny User-Agent `python-requests`), timeout 10 s, limit 2 MB, walidacja nagłówka GIF/PNG (strona HTML zamiast obrazka nie zostanie zapisana), zapis atomowy.
-- Nieudane pobrania trafiają do `sprites/_missing.json` i są ponawiane po 24 h — start nie mieli sieci za każdym razem.
-- Brak sprite'a = kółko jak wcześniej. Własna nazwa pliku: pole `"sprite"` w `monsters.json`. Inne źródło: zmienna `TIBIA_SPRITE_BASE_URL`.
-- Bez GUI: `python3 -m rl_twin.assets` (`--force` pobiera ponownie).
-- `sprites/` jest w `.gitignore` — grafiki to własność CipSoft, pobieraj je lokalnie, nie wrzucaj do repo.
+Nieudane pobrania są pamiętane 24 h w `sprites/_missing.json` (z wersją listy źródeł — po zmianie źródeł stare wpisy są ignorowane). „Pobierz grafiki ponownie” wymusza próbę. Własne pliki: wrzuć `sprites/Nazwa_Potwora.gif|png`. `sprites/` jest w `.gitignore` (grafiki CipSoft). Bez GUI: `python3 -m rl_twin.assets`.

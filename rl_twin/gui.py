@@ -30,6 +30,8 @@ from PyQt5.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QProgressBar,
@@ -68,7 +70,7 @@ from .env import (
     EnvConfig,
     grid_to_rows,
 )
-from .mapparser import ColorRule, MapParser, load_rgba
+from .mapparser import DEFAULT_WALL_COLORS, MapParser, color_label, load_rgba, palette
 from .items import ItemDatabase
 from .monsters import MonsterDatabase
 from .observation import ACTION_LABELS_PL
@@ -92,6 +94,8 @@ ELEMENT_COLORS = {
 TOOL_WAYPOINT = "waypoint"
 TOOL_MONSTER = "monster"
 TOOL_OBSTACLE = "obstacle"
+TOOL_MOVE = "move"
+MARKER_PICK_PX = 14   # click radius (screen pixels) for picking spawn / waypoint markers
 
 
 def format_game_time(ms):
@@ -149,9 +153,10 @@ class AssetWorker(QThread):
     sprite_ready = pyqtSignal(str)
     summary = pyqtSignal(dict)
 
-    def __init__(self, entries, parent=None):
+    def __init__(self, entries, parent=None, force=False):
         super().__init__(parent)
         self.entries = entries
+        self.force = force
         self._stop_requested = False
 
     def stop(self):
@@ -167,7 +172,7 @@ class AssetWorker(QThread):
         for entry in self.entries:
             if self._stop_requested:
                 break
-            for result in manager.ensure([entry]):
+            for result in manager.ensure([entry], force=self.force):
                 counts[result.status] = counts.get(result.status, 0) + 1
                 if result.status == "downloaded":
                     self.sprite_ready.emit(result.name)
@@ -183,9 +188,10 @@ class GridCanvas(QGraphicsView):
 
     scenario_changed = pyqtSignal()
     edit_blocked = pyqtSignal()
+    move_rejected = pyqtSignal()
     cell_hovered = pyqtSignal(int, int)
 
-    MIN_ZOOM = 0.05
+    MIN_ZOOM = 0.02
     MAX_ZOOM = 6.0
 
     def __init__(self, parent=None):
@@ -208,6 +214,7 @@ class GridCanvas(QGraphicsView):
         self.map_path = None
         self.map_cell_px = CELL
         self.map_floor = None        # floor the background image (and its parsed walls) belongs to
+        self.map_offset = (0, 0)
         self.sprites = None          # SpriteStore, set by the main window
 
         self.collision = {}          # z -> np.ndarray (rows, cols) uint8
@@ -222,6 +229,7 @@ class GridCanvas(QGraphicsView):
         self._panning = False
         self._pan_last = QPoint()
         self._paint_button = None
+        self._drag_marker = None
         self._druid_item = None
         self._range_item = None
         self._monster_items = []
@@ -264,8 +272,11 @@ class GridCanvas(QGraphicsView):
         self._redraw_waypoints()
         self.scenario_changed.emit()
 
-    def load_map(self, path, cell_px, grid=None):
-        """Show the image as background of the current floor; `grid` (parsed walls) replaces that floor's collision."""
+    def load_map(self, path, cell_px, grid=None, offset=(0, 0), fit=True):
+        """
+        Show the image as background of the current floor; `grid` (parsed walls) replaces that floor's
+        collision. `offset` is the pixel where the tile grid starts (detected for upscaled minimaps).
+        """
         if self._map_item is not None:
             self._scene.removeItem(self._map_item)
             self._map_item = None
@@ -275,19 +286,45 @@ class GridCanvas(QGraphicsView):
             return None
         self.map_path = path
         self.map_cell_px = cell_px
+        scale = CELL / cell_px
+        offset_x, offset_y = offset
         self._map_item = QGraphicsPixmapItem(pixmap)
         self._map_item.setZValue(-10)
-        self._map_item.setScale(CELL / cell_px)
+        self._map_item.setTransformationMode(Qt.FastTransformation)   # crisp pixel-art minimaps
+        self._map_item.setScale(scale)
+        self._map_item.setPos(-offset_x * scale, -offset_y * scale)
         self._scene.addItem(self._map_item)
         self.map_floor = self.floor
-        self.resize_grid(max(1, pixmap.width() // cell_px), max(1, pixmap.height() // cell_px))
+        self.map_offset = (offset_x, offset_y)
+        self.resize_grid(max(1, (pixmap.width() - offset_x) // cell_px), max(1, (pixmap.height() - offset_y) // cell_px))
         if grid is not None:
             if grid.shape != (self.rows, self.cols):
                 raise ValueError(f"Parsed grid {grid.shape} does not match the map {self.rows}x{self.cols}")
             self.collision[self.floor] = grid.astype(np.uint8)
             self.refresh()
-        self.centerOn(self._scene.sceneRect().center())
+        if fit:
+            self.fit_map()
         return self.collision.get(self.floor)
+
+    def set_collision(self, z, grid):
+        self.collision[int(z)] = grid.astype(np.uint8)
+        self.refresh()
+
+    def fit_map(self):
+        """Zoom so the whole map fills the view."""
+        self.resetTransform()
+        self.fitInView(self._scene.sceneRect(), Qt.KeepAspectRatio)
+        self._zoom = self.transform().m11()
+        self._apply_marker_scale()
+
+    def _marker_scale(self):
+        """Scale for live entities so they never shrink below ~20 px on screen when zoomed out."""
+        return max(1.0, 0.8 / max(self._zoom, 1e-3))
+
+    def _apply_marker_scale(self):
+        scale = self._marker_scale()
+        for item in ([self._druid_item] if self._druid_item else []) + self._monster_items:
+            item["body"].setScale(scale)
 
     def _render_overlay(self):
         grid = self.grid()
@@ -339,20 +376,22 @@ class GridCanvas(QGraphicsView):
         for (x, y, z), name in self.spawns.items():
             if z != self.floor:
                 continue
-            item = QGraphicsRectItem(x * CELL + 4, y * CELL + 4, CELL - 8, CELL - 8)
-            item.setBrush(QBrush(QColor(213, 0, 0, 90)))
-            item.setPen(QPen(QColor("#ff5252"), 2, Qt.DashLine))
-            item.setZValue(2)
-            pixmap = self.sprites.pixmap(name) if self.sprites else None
+            # Fixed on-screen size (ItemIgnoresTransformations) so spawns stay visible at any zoom
+            item = QGraphicsRectItem(-11, -11, 22, 22)
+            item.setFlag(QGraphicsRectItem.ItemIgnoresTransformations)
+            item.setPos(x * CELL + CELL / 2, y * CELL + CELL / 2)
+            item.setBrush(QBrush(QColor(213, 0, 0, 150)))
+            item.setPen(QPen(QColor("#ffffff"), 1.5))
+            item.setZValue(6)
+            pixmap = self.sprites.pixmap(name, 20) if self.sprites else None
             if pixmap is not None:
                 icon = QGraphicsPixmapItem(pixmap, item)
-                icon.setOpacity(0.6)
-                icon.setPos(x * CELL + (CELL - pixmap.width()) / 2, y * CELL + (CELL - pixmap.height()) / 2)
+                icon.setPos(-pixmap.width() / 2, -pixmap.height() / 2)
             else:
                 label = QGraphicsSimpleTextItem(name[:2], item)
                 label.setFont(QFont("Sans", 8, QFont.Bold))
                 label.setBrush(QBrush(QColor("#ffffff")))
-                label.setPos(x * CELL + 8, y * CELL + 8)
+                label.setPos(-label.boundingRect().width() / 2, -label.boundingRect().height() / 2)
             item.setToolTip(f"Spawn: {name} (z={z})")
             self._scene.addItem(item)
             self._spawn_items[(x, y, z)] = item
@@ -363,31 +402,36 @@ class GridCanvas(QGraphicsView):
         self._waypoint_items = []
         on_floor = [(i, x * CELL + CELL / 2, y * CELL + CELL / 2)
                     for i, (x, y, z) in enumerate(self.waypoints) if z == self.floor]
-        pen = QPen(QColor("#ffc400"), 2)
+        pen = QPen(QColor("#ffc400"), 3)
         pen.setCosmetic(True)
+        gap_pen = QPen(QColor("#ffc400"), 2, Qt.DotLine)
+        gap_pen.setCosmetic(True)
         for (ia, ax, ay), (ib, bx, by) in zip(on_floor, on_floor[1:]):
             line = QGraphicsLineItem(ax, ay, bx, by)
-            line.setPen(pen if ib == ia + 1 else QPen(QColor("#ffc400"), 1, Qt.DotLine))
-            line.setZValue(3)
+            line.setPen(pen if ib == ia + 1 else gap_pen)
+            line.setZValue(7)
             self._scene.addItem(line)
             self._waypoint_items.append(line)
         if len(on_floor) >= 3 and len(on_floor) == len(self.waypoints):
             loop = QGraphicsLineItem(on_floor[-1][1], on_floor[-1][2], on_floor[0][1], on_floor[0][2])
-            loop_pen = QPen(QColor("#ffc400"), 1.5, Qt.DashLine)
+            loop_pen = QPen(QColor("#ffc400"), 2, Qt.DashLine)
             loop_pen.setCosmetic(True)
             loop.setPen(loop_pen)
-            loop.setZValue(3)
+            loop.setZValue(7)
             self._scene.addItem(loop)
             self._waypoint_items.append(loop)
         for i, cx, cy in on_floor:
-            circle = QGraphicsEllipseItem(cx - 7, cy - 7, 14, 14)
+            circle = QGraphicsEllipseItem(-8, -8, 16, 16)
+            circle.setFlag(QGraphicsEllipseItem.ItemIgnoresTransformations)
+            circle.setPos(cx, cy)
             circle.setBrush(QBrush(QColor("#00e676" if i == 0 else "#00b0ff")))
-            circle.setPen(QPen(QColor("#ffffff"), 1.5))
-            circle.setZValue(4)
+            circle.setPen(QPen(QColor("#000000"), 2))
+            circle.setZValue(8)
             label = QGraphicsSimpleTextItem(str(i + 1), circle)
-            label.setFont(QFont("Sans", 7, QFont.Bold))
+            label.setFont(QFont("Sans", 9, QFont.Bold))
             label.setBrush(QBrush(QColor("#ffffff")))
-            label.setPos(cx + 7, cy - 16)
+            label.setPen(QPen(QColor("#000000"), 0.6))
+            label.setPos(9, -20)
             self._scene.addItem(circle)
             self._waypoint_items.append(circle)
 
@@ -417,6 +461,51 @@ class GridCanvas(QGraphicsView):
             self._redraw_spawns()
         self.scenario_changed.emit()
 
+    def marker_at(self, view_pos):
+        """Spawn or waypoint marker under the cursor (screen-distance hit test, works at any zoom)."""
+        best, best_dist = None, MARKER_PICK_PX
+        for (x, y, z) in self.spawns:
+            if z == self.floor:
+                center = self.mapFromScene(x * CELL + CELL / 2, y * CELL + CELL / 2)
+                dist = (center - view_pos).manhattanLength()
+                if dist <= best_dist:
+                    best, best_dist = ("spawn", (x, y, z)), dist
+        for index, (x, y, z) in enumerate(self.waypoints):
+            if z == self.floor:
+                center = self.mapFromScene(x * CELL + CELL / 2, y * CELL + CELL / 2)
+                dist = (center - view_pos).manhattanLength()
+                if dist < best_dist:
+                    best, best_dist = ("waypoint", index), dist
+        return best
+
+    def delete_marker(self, marker):
+        kind, key = marker
+        if kind == "spawn":
+            self.spawns.pop(key, None)
+        else:
+            del self.waypoints[key]
+        self.refresh()
+
+    def move_marker(self, marker, cell):
+        """Move a spawn / waypoint to `cell` on this floor; refuses walls, map edges and occupied spawn tiles."""
+        x, y = cell
+        if not self._in_bounds(x, y) or self.grid()[y, x]:
+            return False
+        kind, key = marker
+        target = (x, y, self.floor)
+        if kind == "spawn":
+            if target in self.spawns and target != key:
+                return False
+            self.spawns[target] = self.spawns.pop(key)
+        else:
+            self.waypoints[key] = target
+        self.refresh()
+        return True
+
+    def clear_spawns(self, floor_only=True):
+        self.spawns = {k: v for k, v in self.spawns.items() if floor_only and k[2] != self.floor}
+        self.refresh()
+
     def _erase(self, cell, dragging):
         x, y = cell
         if not self._in_bounds(x, y):
@@ -434,6 +523,7 @@ class GridCanvas(QGraphicsView):
             self.refresh()
 
     def clear_floor(self):
+        self.clear_entities()
         self.collision[self.floor] = np.zeros((self.rows, self.cols), dtype=np.uint8)
         self.spawns = {k: v for k, v in self.spawns.items() if k[2] != self.floor}
         self.waypoints = [w for w in self.waypoints if w[2] != self.floor]
@@ -460,9 +550,11 @@ class GridCanvas(QGraphicsView):
             self._range_item.setZValue(5)
             self._scene.addItem(self._range_item)
             self._druid_item = self._make_entity(QColor("#00c853"), "Druid", 22, mana_bar=True)
+            self._apply_marker_scale()
         if len(self._monster_items) != len(env.monsters):
             self._clear_monsters()
             self._monster_items = [self._make_entity(QColor("#d50000"), m.name, 15) for m in env.monsters]
+            self._apply_marker_scale()
 
         druid = env.druid
         span = STRIKE_RANGE * 2 + 1
@@ -620,7 +712,15 @@ class GridCanvas(QGraphicsView):
                 return
             self._paint_button = button
             cell = self.cell_at(event.pos())
-            if button == Qt.LeftButton:
+            marker = self.marker_at(event.pos())
+            if button == Qt.RightButton and marker is not None:
+                self.delete_marker(marker)          # RMB on a marker deletes exactly that marker
+                self._paint_button = None
+            elif button == Qt.LeftButton and self.tool == TOOL_MOVE:
+                self._drag_marker = marker
+                if marker is not None:
+                    self.viewport().setCursor(Qt.ClosedHandCursor)
+            elif button == Qt.LeftButton:
                 self._apply_tool(cell, dragging=False)
             else:
                 self._erase(cell, dragging=False)
@@ -637,6 +737,8 @@ class GridCanvas(QGraphicsView):
         cell = self.cell_at(event.pos())
         self.cell_hovered.emit(*cell)
         if self._paint_button is not None and self.editing_enabled:
+            if self.tool == TOOL_MOVE and self._paint_button == Qt.LeftButton:
+                return                               # the marker is dropped on release
             if self._paint_button == Qt.LeftButton:
                 self._apply_tool(cell, dragging=True)
             else:
@@ -648,6 +750,11 @@ class GridCanvas(QGraphicsView):
             self.viewport().unsetCursor()
         elif event.button() == self._paint_button:
             self._paint_button = None
+            if self._drag_marker is not None:
+                if not self.move_marker(self._drag_marker, self.cell_at(event.pos())):
+                    self.move_rejected.emit()
+                self._drag_marker = None
+                self.viewport().unsetCursor()
         super().mouseReleaseEvent(event)
 
     def wheelEvent(self, event):
@@ -659,6 +766,7 @@ class GridCanvas(QGraphicsView):
             return
         self._zoom *= factor
         self.scale(factor, factor)
+        self._apply_marker_scale()
 
 
 # --------------------------------------------------------------------------- #
@@ -806,6 +914,8 @@ class MainWindow(QMainWindow):
 
         self.monster_db = MonsterDatabase.load()
         self.item_db = ItemDatabase.load()
+        self.wall_colors = set(DEFAULT_WALL_COLORS)
+        self._map_rgba = None
         self.monsters_file = None
         self.asset_manager = AssetManager(SPRITES_DIR, log=print)
         self.sprite_store = SpriteStore(self.asset_manager)
@@ -852,12 +962,15 @@ class MainWindow(QMainWindow):
         self.canvas = GridCanvas()
         self.canvas.scenario_changed.connect(self._on_scenario_changed)
         self.canvas.edit_blocked.connect(
-            lambda *_: self.statusBar().showMessage("Edycja mapy zablokowana podczas symulacji/treningu.", 3000))
+            lambda *_: self.statusBar().showMessage(
+                "Edycja mapy zablokowana - kliknij 'Reset epizodu' (albo zatrzymaj trening), aby edytować.", 5000))
+        self.canvas.move_rejected.connect(
+            lambda *_: self.statusBar().showMessage("Nie można tu przenieść: ściana, poza mapą albo zajęte pole.", 4000))
         self.canvas.cell_hovered.connect(
             lambda x, y: self.cell_label.setText(f"Pole: ({x}, {y}, {self.canvas.floor})"))
         left_layout.addWidget(self.canvas, 1)
-        hint = QLabel("LPM: użyj narzędzia   |   PPM: wymaż pole (z narzędziem Trasa: usuń ostatni punkt)   |   "
-                      "ŚPM: przesuwanie   |   Kółko: zoom")
+        hint = QLabel("LPM: narzędzie (Przesuń: chwyć spawn/punkt i upuść)   |   PPM na znaczniku: usuń, "
+                      "PPM na polu: wymaż   |   ŚPM: przesuwanie widoku   |   Kółko: zoom")
         hint.setObjectName("hint")
         hint.setAlignment(Qt.AlignCenter)
         left_layout.addWidget(hint)
@@ -942,7 +1055,8 @@ class MainWindow(QMainWindow):
         self.tool_group = QButtonGroup(self)
         for i, (tool, text) in enumerate(((TOOL_WAYPOINT, "Punkty trasy"),
                                           (TOOL_MONSTER, "Spawn potwora"),
-                                          (TOOL_OBSTACLE, "Przeszkody"))):
+                                          (TOOL_OBSTACLE, "Przeszkody"),
+                                          (TOOL_MOVE, "Przesuń"))):
             radio = QRadioButton(text)
             radio.setProperty("tool", tool)
             radio.setChecked(i == 0)
@@ -989,6 +1103,15 @@ class MainWindow(QMainWindow):
             grid.addWidget(widget, row, col * 2 + 1)
         layout.addLayout(grid)
 
+        palette_label = QLabel("Kolory mapy - zaznaczone = ściana (nieprzechodnie):")
+        palette_label.setObjectName("hint")
+        layout.addWidget(palette_label)
+        self.palette_list = QListWidget()
+        self.palette_list.setMaximumHeight(130)
+        self.palette_list.setToolTip("Odznacz/zaznacz kolor, aby zmienić, czy jest ścianą. Mapa parsuje się od razu.")
+        self.palette_list.itemChanged.connect(self._on_palette_changed)
+        layout.addWidget(self.palette_list)
+
         buttons = QGridLayout()
         self.load_map_button = QPushButton("Wczytaj mapę PNG…")
         self.load_map_button.clicked.connect(self.load_map_dialog)
@@ -998,11 +1121,16 @@ class MainWindow(QMainWindow):
         self.clear_map_button.clicked.connect(lambda *_: self.canvas.clear_floor())
         self.load_db_button = QPushButton("Baza potworów (JSON)…")
         self.load_db_button.clicked.connect(self.load_monster_db)
+        self.clear_spawns_button = QPushButton("Usuń potwory (piętro)")
+        self.clear_spawns_button.clicked.connect(self._clear_spawns)
+        self.sprites_button = QPushButton("Pobierz grafiki ponownie")
+        self.sprites_button.clicked.connect(lambda *_: self.sync_sprites(force=True))
         self.save_scenario_button = QPushButton("Zapisz scenariusz")
         self.save_scenario_button.clicked.connect(self.save_scenario)
         self.load_scenario_button = QPushButton("Wczytaj scenariusz")
         self.load_scenario_button.clicked.connect(self.load_scenario)
         for i, button in enumerate((self.load_map_button, self.reparse_button, self.clear_map_button,
+                                    self.clear_spawns_button, self.sprites_button,
                                     self.load_db_button, self.save_scenario_button, self.load_scenario_button)):
             buttons.addWidget(button, i // 2, i % 2)
         layout.addLayout(buttons)
@@ -1225,7 +1353,7 @@ class MainWindow(QMainWindow):
                        self.cell_px_input, self.tolerance_input, self.fraction_input,
                        self.diagonal_input, self.ground_speed_input,
                        self.load_map_button, self.reparse_button, self.clear_map_button,
-                       self.load_db_button, self.load_scenario_button):
+                       self.load_db_button, self.load_scenario_button, self.clear_spawns_button):
             widget.setEnabled(editable)
         self.floor_input.setEnabled(not training)
         self.manual_radio.setEnabled(not busy)
@@ -1359,7 +1487,14 @@ class MainWindow(QMainWindow):
             self.visual_timer.stop()
             self.manual_running = False
             self.env = None
+            self.canvas.clear_entities()   # live figures vanish; editable spawn markers stay
+            self.log("system", "Mapa wróciła do trybu edycji (spawny można przesuwać i usuwać).")
             self._refresh_controls()
+
+    def _clear_spawns(self):
+        count = sum(1 for k in self.canvas.spawns if k[2] == self.canvas.floor)
+        self.canvas.clear_spawns()
+        self.log("system", f"Usunięto {count} spawnów z piętra {self.canvas.floor}.")
 
     def _update_manual_status(self, info, reward, action):
         env = self.env
@@ -1483,16 +1618,17 @@ class MainWindow(QMainWindow):
     def _parser(self):
         cell_px = self.cell_px_input.value() or None   # 0 = auto
         return MapParser(cell_px=cell_px, dark_threshold=self.tolerance_input.value(),
-                         rules=(ColorRule("Woda (#0000FF)", (0, 0, 255), 60),),
+                         wall_colors=sorted(self.wall_colors),
                          blocked_fraction=self.fraction_input.value() / 100.0)
 
-    def load_map_file(self, path):
+    def load_map_file(self, path, fit=True):
         """Parse walls first, then show the image; a failed parse leaves the previous map untouched."""
         name = os.path.basename(path)
         parser = self._parser()
         try:
-            grid = parser.to_grid(load_rgba(path))
-            loaded = self.canvas.load_map(path, parser.last_cell_px, grid)
+            rgba = load_rgba(path)
+            grid = parser.to_grid(rgba)
+            loaded = self.canvas.load_map(path, parser.last_cell_px, grid, parser.last_offset, fit=fit)
         except Exception as exc:  # any decoder/shape problem must be visible, never a silent 0-wall map
             self.log("warn", f"Nie udało się sparsować mapy {name}: {exc}")
             QMessageBox.warning(self, "Błąd mapy", f"Nie udało się sparsować mapy {name}:\n{exc}")
@@ -1500,11 +1636,15 @@ class MainWindow(QMainWindow):
         if loaded is None:
             self.log("warn", f"Qt nie potrafi wyświetlić obrazu {name}.")
             return False
-        kind = "minimapa (1 px = 1 pole)" if parser.last_was_minimap else "zrzut ekranu"
+        self._map_rgba = rgba
+        self._populate_palette(rgba)
+        if parser.last_was_minimap:
+            kind = f"minimapa ({parser.last_cell_px}x{parser.last_cell_px} px = 1 pole, start siatki {parser.last_offset})"
+        else:
+            kind = f"zrzut ekranu ({parser.last_cell_px} px = 1 pole)"
         walls = int(grid.sum())
-        self.log("system", f"Wczytano mapę {name}: {kind}, {parser.last_cell_px} px/pole, siatka "
-                           f"{self.canvas.cols}x{self.canvas.rows}, ściany: {walls} ({grid.mean() * 100:.1f}%), "
-                           f"piętro {self.canvas.floor}.")
+        self.log("system", f"Wczytano mapę {name}: {kind}, siatka {self.canvas.cols}x{self.canvas.rows} pól, "
+                           f"ściany: {walls} ({grid.mean() * 100:.1f}%), piętro {self.canvas.floor}.")
         if walls == 0:
             self.log("warn", "Parser nie znalazł żadnej ściany - podnieś 'Próg czerni' albo sprawdź 'Piksele na pole'.")
         elif walls == grid.size:
@@ -1521,7 +1661,41 @@ class MainWindow(QMainWindow):
         if not self.canvas.map_path:
             self.log("warn", "Brak wczytanej mapy do sparsowania.")
             return
-        self.load_map_file(self.canvas.map_path)
+        self.load_map_file(self.canvas.map_path, fit=False)
+
+    def _populate_palette(self, rgba):
+        threshold = self.tolerance_input.value()
+        self.palette_list.blockSignals(True)
+        self.palette_list.clear()
+        for rgb, share in palette(rgba)[:48]:
+            dark = all(v < threshold for v in rgb)
+            item = QListWidgetItem(f"{color_label(rgb)}  rgb{rgb}  -  {share * 100:.1f}%"
+                                   + ("  (próg czerni)" if dark else ""))
+            swatch = QPixmap(14, 14)
+            swatch.fill(QColor(*rgb))
+            item.setIcon(QIcon(swatch))
+            item.setData(Qt.UserRole, rgb)
+            item.setFlags((item.flags() | Qt.ItemIsUserCheckable) & ~(Qt.ItemIsEnabled if dark else Qt.NoItemFlags))
+            item.setCheckState(Qt.Checked if dark or rgb in self.wall_colors else Qt.Unchecked)
+            self.palette_list.addItem(item)
+        self.palette_list.blockSignals(False)
+
+    def _on_palette_changed(self, item):
+        rgb = tuple(item.data(Qt.UserRole))
+        if item.checkState() == Qt.Checked:
+            self.wall_colors.add(rgb)
+        else:
+            self.wall_colors.discard(rgb)
+        if self._map_rgba is None or self.canvas.map_floor is None:
+            return
+        grid = self._parser().to_grid(self._map_rgba)
+        if grid.shape != (self.canvas.rows, self.canvas.cols):
+            self.reparse_map()
+            return
+        self.canvas.set_collision(self.canvas.map_floor, grid)
+        state = "ściana" if rgb in self.wall_colors else "przechodnie"
+        self.log("system", f"{color_label(rgb)} rgb{rgb} = {state}. Ściany: {int(grid.sum())} "
+                           f"({grid.mean() * 100:.1f}%).")
 
     def load_monster_db(self):
         path, _ = QFileDialog.getOpenFileName(self, "Baza potworów", os.path.dirname(self.monster_db.source),
@@ -1547,6 +1721,8 @@ class MainWindow(QMainWindow):
         data["map_image"] = self.canvas.map_path
         data["map_cell_px"] = self.canvas.map_cell_px
         data["map_floor"] = self.canvas.map_floor
+        data["map_offset"] = list(self.canvas.map_offset)
+        data["map_wall_colors"] = [list(c) for c in sorted(self.wall_colors)]
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(data, handle, ensure_ascii=False, indent=2)
         self.log("system", f"Zapisano scenariusz: {os.path.basename(path)}")
@@ -1569,9 +1745,16 @@ class MainWindow(QMainWindow):
         map_image = data.get("map_image")
         map_floor = int(data.get("map_floor") if data.get("map_floor") is not None else config.floor)
         self.floor_input.setValue(map_floor)
+        if data.get("map_wall_colors") is not None:
+            self.wall_colors = {tuple(c) for c in data["map_wall_colors"]}
         if map_image and os.path.isfile(map_image):
             self.cell_px_input.setValue(int(data.get("map_cell_px", CELL)))
-            self.canvas.load_map(map_image, self.cell_px_input.value())
+            self.canvas.load_map(map_image, self.cell_px_input.value(), offset=tuple(data.get("map_offset", (0, 0))))
+            try:
+                self._map_rgba = load_rgba(map_image)
+                self._populate_palette(self._map_rgba)
+            except OSError:
+                self._map_rgba = None
         self.canvas.apply_config(config)
         if map_image and os.path.isfile(map_image) and str(map_floor) not in config.collision:
             self.log("warn", f"Scenariusz nie ma kolizji dla piętra {map_floor} - parsuję mapę {os.path.basename(map_image)}.")
@@ -1614,17 +1797,19 @@ class MainWindow(QMainWindow):
 
     # ----- sprites --------------------------------------------------------- #
 
-    def sync_sprites(self):
+    def sync_sprites(self, force=False):
         """Download missing sprites for the druid and every monster in the database (background thread)."""
         if self.asset_worker is not None and self.asset_worker.isRunning():
             self._sprite_resync = True
             return
         entries = sprite_entries(self.monster_db)
-        if all(self.asset_manager.local_path(name) for name, _ in entries):
+        if force:
+            entries = [e for e in entries if not self.asset_manager.local_path(e[0])]
+        if not entries or (not force and all(self.asset_manager.local_path(name) for name, _ in entries)):
             self.log("system", f"Sprite'y: komplet {len(entries)} na dysku ({os.path.basename(SPRITES_DIR)}/).")
             return
         self.log("system", "Sprite'y: pobieram brakujące obrazki z TibiaWiki w tle…")
-        self.asset_worker = AssetWorker(entries, self)
+        self.asset_worker = AssetWorker(entries, self, force=force)
         self.asset_worker.message.connect(self._on_asset_message)
         self.asset_worker.sprite_ready.connect(self._on_sprite_ready)
         self.asset_worker.summary.connect(self._on_assets_done)
