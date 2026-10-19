@@ -24,6 +24,7 @@ from PyQt5.QtWidgets import (
     QFormLayout,
     QGraphicsEllipseItem,
     QGraphicsLineItem,
+    QGraphicsPathItem,
     QGraphicsPixmapItem,
     QGraphicsPolygonItem,
     QGraphicsRectItem,
@@ -80,6 +81,9 @@ from .mapparser import DEFAULT_WALL_COLORS, MapParser, color_label, load_rgba, m
 from .scripts import export_script, import_script
 from .tactics import DEFAULT_ZONE_RADIUS, STATE_LABELS_PL, ZONE_LABELS_PL, TacticsConfig, make_zone
 from .terrain import encode_speed, load_client_minimap, stairs_mask
+from .tibiamaps import load_area as load_tibiamaps_area, locate as locate_on_tibiamaps
+from .rules import rule_action
+from .physics import distance_field, path_direction
 from .items import ItemDatabase
 from .monsters import MonsterDatabase
 from .observation import ACTION_LABELS_PL
@@ -104,6 +108,7 @@ TOOL_WAYPOINT = "waypoint"
 TOOL_MONSTER = "monster"
 TOOL_OBSTACLE = "obstacle"
 TOOL_MOVE = "move"
+CONTROL_KEYBOARD, CONTROL_RULES, CONTROL_AGENT = "keyboard", "rules", "agent"
 TOOL_LURE, TOOL_ARENA, TOOL_ORBIT = "lure", "arena", "orbit"
 ZONE_COLORS = {"lure": "#ffa726", "arena": "#ef5350", "orbit": "#26c6da"}
 MARKER_PICK_PX = 14   # click radius (screen pixels) for picking spawn / waypoint markers
@@ -584,20 +589,28 @@ class GridCanvas(QGraphicsView):
         pen.setCosmetic(True)
         gap_pen = QPen(QColor("#ffc400"), 2, Qt.DotLine)
         gap_pen.setCosmetic(True)
-        for (ia, ax, ay), (ib, bx, by) in zip(on_floor, on_floor[1:]):
-            line = QGraphicsLineItem(ax, ay, bx, by)
-            line.setPen(pen if ib == ia + 1 else gap_pen)
-            line.setZValue(7)
-            self._scene.addItem(line)
-            self._waypoint_items.append(line)
+        loop_pen = QPen(QColor("#ffc400"), 2, Qt.DashLine)
+        loop_pen.setCosmetic(True)
+        bad_pen = QPen(QColor("#ff1744"), 3, Qt.DashLine)
+        bad_pen.setCosmetic(True)
+        segments = [(a, b, pen if b[0] == a[0] + 1 else gap_pen) for a, b in zip(on_floor, on_floor[1:])]
         if len(on_floor) >= 3 and len(on_floor) == len(self.waypoints):
-            loop = QGraphicsLineItem(on_floor[-1][1], on_floor[-1][2], on_floor[0][1], on_floor[0][2])
-            loop_pen = QPen(QColor("#ffc400"), 2, Qt.DashLine)
-            loop_pen.setCosmetic(True)
-            loop.setPen(loop_pen)
-            loop.setZValue(7)
-            self._scene.addItem(loop)
-            self._waypoint_items.append(loop)
+            segments.append((on_floor[-1], on_floor[0], loop_pen))
+        for (ia, ax, ay), (ib, bx, by), segment_pen in segments:
+            # The tiles the druid really walks (shortest path around walls), not a straight line through them
+            tiles = self.route_tiles(self.waypoints[ia], self.waypoints[ib])
+            path = QPainterPath(QPointF(ax, ay))
+            for tx, ty in tiles or [(None, None)]:
+                if tx is None:
+                    path.lineTo(bx, by)
+                else:
+                    path.lineTo(tx * CELL + CELL / 2, ty * CELL + CELL / 2)
+            item = QGraphicsPathItem(path)
+            item.setPen(segment_pen if tiles is not None else bad_pen)
+            item.setToolTip(None if tiles is not None else "Brak przejścia między punktami - druid tu utknie")
+            item.setZValue(7)
+            self._scene.addItem(item)
+            self._waypoint_items.append(item)
         for i, cx, cy in on_floor:
             circle = QGraphicsEllipseItem(-8, -8, 16, 16)
             circle.setFlag(QGraphicsEllipseItem.ItemIgnoresTransformations)
@@ -612,6 +625,31 @@ class GridCanvas(QGraphicsView):
             label.setPos(9, -20)
             self._scene.addItem(circle)
             self._waypoint_items.append(circle)
+
+    def route_tiles(self, start, goal):
+        """Tiles of the shortest walk start -> goal on one floor like the env plans it, or None if unreachable."""
+        (sx, sy, sz), (gx, gy, gz) = start, goal
+        if sz != gz:
+            return []                                  # floor change: drawn straight, the env routes via stairs
+        walkable = self.grid(sz).copy()
+        for x, y, z, *_ in self.transitions:
+            if z == sz and (x, y) != (gx, gy):
+                walkable[y, x] = 1
+        if walkable[gy, gx] or walkable[sy, sx]:
+            return None
+        field = distance_field(walkable, (gx, gy), DEFAULT_DIAGONAL_MULTIPLIER)   # cached in physics
+        if field[sy, sx] == float("inf"):
+            return None
+        tiles, x, y = [], sx, sy
+        for _ in range(self.cols * self.rows):
+            if (x, y) == (gx, gy):
+                break
+            dx, dy, _ = path_direction(field, x, y, DEFAULT_DIAGONAL_MULTIPLIER)
+            if (dx, dy) == (0, 0):
+                break
+            x, y = x + dx, y + dy
+            tiles.append((x, y))
+        return tiles
 
     def _apply_tool(self, cell, dragging):
         x, y = cell
@@ -1381,6 +1419,12 @@ class MainWindow(QMainWindow):
         self.client_map_button.setToolTip("Import folderu minimapy klienta Tibii (Minimap_Color / WaypointCost): "
                                           "ściany, koszt pól i schody między piętrami")
         self.client_map_button.clicked.connect(self.import_client_minimap)
+        self.tibiamaps_button = QPushButton("Prawdziwe kolizje (tibiamaps)")
+        self.tibiamaps_button.setToolTip("Znajduje wczytaną minimapę na mapie świata (tibiamaps.io) i bierze z niej "
+                                         "przechodniość pól z pathfindingu Tibii: kamienie, czaszki, stalagmity "
+                                         "na piasku są ścianą, choć na minimapie wyglądają jak podłoga. "
+                                         "Dodaje też piętra wyżej/niżej ze schodami i ustawia współrzędne świata.")
+        self.tibiamaps_button.clicked.connect(self.calibrate_tibiamaps)
         self.sprites_button = QPushButton("Pobierz grafiki ponownie")
         self.sprites_button.clicked.connect(lambda *_: self.sync_sprites(force=True))
         self.save_scenario_button = QPushButton("Zapisz scenariusz")
@@ -1388,7 +1432,8 @@ class MainWindow(QMainWindow):
         self.load_scenario_button = QPushButton("Wczytaj scenariusz")
         self.load_scenario_button.clicked.connect(self.load_scenario)
         for i, button in enumerate((self.load_map_button, self.reparse_button, self.clear_map_button,
-                                    self.clear_spawns_button, self.client_map_button, self.sprites_button,
+                                    self.clear_spawns_button, self.client_map_button, self.tibiamaps_button,
+                                    self.sprites_button,
                                     self.load_db_button, self.save_scenario_button, self.load_scenario_button)):
             buttons.addWidget(button, i // 2, i % 2)
         layout.addLayout(buttons)
@@ -1511,12 +1556,18 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 4, 0, 0)
         row = QHBoxLayout()
-        self.agent_control_checkbox = QCheckBox("Steruje agent (polityka)")
+        self.control_combo = QComboBox()
+        for label, key in (("Steruje: klawiatura", CONTROL_KEYBOARD), ("Steruje: reguły (bez modelu)", CONTROL_RULES),
+                           ("Steruje: agent (model RL)", CONTROL_AGENT)):
+            self.control_combo.addItem(label, key)
+        self.control_combo.setCurrentIndex(1)
+        self.control_combo.setToolTip("Reguły: skryptowa walka (leczenie, unik fal/belek, Avalanche przy 3+, "
+                                      "Exori, SD, kiting) - testujesz trasę i taktykę bez trenowania modelu")
         self.speed_combo = QComboBox()
         for label, factor in (("x0.5", 0.5), ("x1 (czas rzeczywisty)", 1.0), ("x2", 2.0), ("x4", 4.0), ("x10", 10.0)):
             self.speed_combo.addItem(label, factor)
         self.speed_combo.setCurrentIndex(1)
-        row.addWidget(self.agent_control_checkbox)
+        row.addWidget(self.control_combo)
         self.danger_checkbox = QCheckBox("Strefy zagrożenia")
         self.danger_checkbox.setToolTip("Pokaż pola w zasięgu fal/belek potworów - to samo widzi agent w obserwacji")
         self.danger_checkbox.toggled.connect(lambda on: setattr(self.canvas, "show_danger", on))
@@ -1669,7 +1720,7 @@ class MainWindow(QMainWindow):
     def eventFilter(self, obj, event):
         if event.type() != QEvent.KeyPress:
             return super().eventFilter(obj, event)
-        if (self.manual_running and not self.agent_control_checkbox.isChecked()
+        if (self.manual_running and self.control == CONTROL_KEYBOARD
                 and event.key() in self.key_actions):
             self.pending_action = self.key_actions[event.key()]
             return True
@@ -1741,13 +1792,17 @@ class MainWindow(QMainWindow):
         self.manual_start_button.setEnabled(manual_mode and not training)
         self.manual_start_button.setText("⏸ Pauza" if self.manual_running else "▶ Start")
         self.manual_reset_button.setEnabled(manual_mode and self.env is not None)
-        self.agent_control_checkbox.setEnabled(not training)
+        self.control_combo.setEnabled(not training)
 
         self.train_start_button.setEnabled(not busy and not manual_mode and self.env is None)
         self.train_stop_button.setEnabled(training)
         self.export_button.setEnabled(not training)
         self.load_model_button.setEnabled(not busy)
         self.new_model_button.setEnabled(not busy)
+
+    @property
+    def control(self):
+        return self.control_combo.currentData()
 
     def _on_mode_changed(self):
         self.mode_stack.setCurrentIndex(0 if self.manual_radio.isChecked() else 1)
@@ -1799,7 +1854,7 @@ class MainWindow(QMainWindow):
                 return
             self.manual_running = True
             self.visual_timer.start()
-            who = "agent" if self.agent_control_checkbox.isChecked() else "gracz (klawiatura)"
+            who = self.control_combo.currentText().split(": ", 1)[-1]
             self.log("system", f"Symulacja w czasie rzeczywistym ({self.speed_combo.currentText()}), "
                                f"steruje: {who}.")
         self._refresh_controls()
@@ -1807,8 +1862,8 @@ class MainWindow(QMainWindow):
     def _new_manual_episode(self):
         config = self.build_config()
         self._warn_if_no_walls(config)
-        if not self.agent_control_checkbox.isChecked():
-            # Keyboard play: idle 100 ms waits are decisions too, so the training limit would end it early
+        if self.control != CONTROL_AGENT:
+            # Keyboard / rules: idle 100 ms waits are decisions too, so the training limit would end it early
             config.max_steps = 10 ** 9
         try:
             self.env = DruidHuntEnv(config, record_events=True, monster_db=self.monster_db)
@@ -1850,8 +1905,10 @@ class MainWindow(QMainWindow):
             env = self.env
             if env is None or env.time_ms >= self.visual_clock_ms:
                 break
-            if self.agent_control_checkbox.isChecked():
+            if self.control == CONTROL_AGENT:
                 action = self.agent.act(self.obs, greedy=True)
+            elif self.control == CONTROL_RULES:
+                action = rule_action(env)
             else:
                 action, self.pending_action = self.pending_action, None
                 action = ACTION_WAIT if action is None else action
@@ -1868,7 +1925,7 @@ class MainWindow(QMainWindow):
         self.canvas.sync_entities(self.env)
         self.log("system", f"Koniec epizodu: nagroda {info['episode_reward']:.1f}, zabite {info['kills']}, "
                            f"decyzje {info['steps']}, czas {format_game_time(info['time_ms'])}.")
-        if self.agent_control_checkbox.isChecked():
+        if self.control == CONTROL_AGENT:
             self._new_manual_episode()
         else:
             self.visual_timer.stop()
@@ -2165,7 +2222,7 @@ class MainWindow(QMainWindow):
         self.canvas.stairs = {}
         client = data.get("client_minimap")
         self._client_minimap = None
-        if client and os.path.isdir(client.get("folder", "")):
+        if client and (client.get("source") == "tibiamaps" or os.path.isdir(client.get("folder", ""))):
             self._run_client_import(client, log_prefix="Scenariusz: ")
         for z_text, entry in floor_maps.items():
             if entry.get("client") or not entry.get("path") or not os.path.isfile(entry["path"]):
@@ -2267,7 +2324,16 @@ class MainWindow(QMainWindow):
 
     def _run_client_import(self, params, log_prefix=""):
         try:
-            terrain = load_client_minimap(params["folder"], params["x"], params["y"], params["radius"], params["floors"])
+            if params.get("source") == "tibiamaps":
+                QApplication.setOverrideCursor(Qt.WaitCursor)
+                try:
+                    terrain = load_tibiamaps_area(params["x"], params["y"], params["cols"], params["rows"],
+                                                  params["floors"], log=lambda text: self.log("system", text))
+                finally:
+                    QApplication.restoreOverrideCursor()
+            else:
+                terrain = load_client_minimap(params["folder"], params["x"], params["y"], params["radius"],
+                                              params["floors"])
         except Exception as exc:  # missing files, wrong folder, decoding problems - report, keep the old map
             self.log("warn", f"{log_prefix}Import minimapy klienta nieudany: {exc}")
             QMessageBox.warning(self, "Minimapa klienta", f"Import nieudany:\n{exc}")
@@ -2275,7 +2341,8 @@ class MainWindow(QMainWindow):
         self.canvas.apply_terrain(terrain)
         self._client_minimap = params
         self._map_rgba = None
-        self.floor_input.setValue(min(terrain.layers))
+        home = params.get("home", min(terrain.layers))
+        self.floor_input.setValue(home if home in terrain.layers else min(terrain.layers))
         origin = terrain.layers[min(terrain.layers)].origin
         self.origin_x_input.setValue(int(origin[0]))
         self.origin_y_input.setValue(int(origin[1]))
@@ -2287,6 +2354,48 @@ class MainWindow(QMainWindow):
                            f"początek świata {terrain.layers[min(terrain.layers)].origin}, "
                            f"przejścia między piętrami: {len(terrain.transitions)}.")
         return True
+
+    def calibrate_tibiamaps(self):
+        """Locate the loaded minimap PNG on the world map and replace colour-guessed walls with real walkability."""
+        c = self.canvas
+        if self._map_rgba is None or c.map_floor is None:
+            QMessageBox.information(self, "tibiamaps", "Najpierw wczytaj PNG minimapy (np. wycinek z tibiamaps.io).")
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            found = locate_on_tibiamaps(self._map_rgba, log=lambda text: self.log("system", text))
+        except Exception as exc:  # no internet, unreadable cache - report, keep the current map
+            QApplication.restoreOverrideCursor()
+            self.log("warn", f"tibiamaps: {exc}")
+            QMessageBox.warning(self, "tibiamaps", f"Nie udało się pobrać/porównać mapy:\n{exc}")
+            return
+        QApplication.restoreOverrideCursor()
+        if found is None:
+            self.log("warn", "tibiamaps: nie znaleziono tego fragmentu na mapie świata (to musi być minimapa "
+                             "Tibii 1:1 albo powiększona x2, x3..., bez zmienionych kolorów).")
+            QMessageBox.warning(self, "tibiamaps", "Nie znaleziono tej mapy na mapie świata Tibii.")
+            return
+        old_floor, z = c.floor, found["z"]
+        before = int(c.grid().sum())
+        shift = z - old_floor
+        waypoints = [(x, y, wz + shift) for x, y, wz in c.waypoints]
+        spawns = {(x, y, sz + shift): name for (x, y, sz), name in c.spawns.items()}
+        zones = [dict(zone, z=zone["z"] + shift) for zone in c.zones]
+        self.log("system", f"tibiamaps: mapa to świat ({found['x']}, {found['y']}, piętro {z}), "
+                           f"zgodność {found['match'] * 100:.1f}%.")
+        params = {"source": "tibiamaps", "x": found["x"], "y": found["y"], "cols": c.cols, "rows": c.rows,
+                  "floors": [z, z - 1, z + 1], "home": z}
+        if not self._run_client_import(params, log_prefix="tibiamaps: "):
+            return
+        c.waypoints, c.spawns, c.zones = waypoints, spawns, zones
+        c.set_floor(z)
+        blocked = [p for p in waypoints if p[2] in c.collision and c.collision[p[2]][p[1], p[0]]]
+        self.log("system", f"tibiamaps: ściany na piętrze {z}: {before} (z kolorów) -> {int(c.grid(z).sum())} "
+                           f"(prawdziwe). Trasa i spawny przeniesione na piętro {z}.")
+        if blocked:
+            self.log("warn", f"tibiamaps: {len(blocked)} punktów trasy stoi na nieprzechodnim polu: "
+                             f"{[(x, y) for x, y, _ in blocked][:8]} - przesuń je.")
+        c.refresh()
 
     def _on_floor_changed(self, z):
         self.canvas.set_floor(z)

@@ -112,6 +112,29 @@ Nagrody: `lure_bonus` za każdy potwór doprowadzony do walki, `aoe_missed` za p
 
 Skrypty (`rl_twin/scripts.py`, „Eksport/Import skryptu”): `.json` (trasa z typami + strefy) albo `.txt` z liniami `Node (x, y, z)` / `Ladder` / `Hole` we współrzędnych świata (`Świat X/Y pola [0,0]`, ustawiane automatycznie z minimapy klienta). Import przyjmuje każdą linię z trzema liczbami.
 
+## Prawdziwe kolizje (tibiamaps) i walka na regułach
+
+Kolor minimapy mówi tylko, jak wygląda podłoga. Piasek z kamieniem, czaszką albo stalagmitem
+dalej jest rysowany jako piasek, a w grze nie da się na niego wejść. Na Darashia Dragon Lair
+to ok. 9% piasku i 12% bruku. Przycisk **Prawdziwe kolizje (tibiamaps)**:
+
+1. znajduje wczytany PNG minimapy na mapie świata (dane github.com/tibiamaps/tibia-map-data,
+   dowolne powiększenie x1/x2/x3…);
+2. bierze przechodniość i koszt pól z warstwy pathfindingu Tibii (`floor-ZZ-path.png`,
+   ten sam format co `Minimap_WaypointCost` klienta);
+3. dokłada piętra wyżej i niżej ze schodami, ustawia współrzędne świata (eksport skryptu)
+   i przenosi trasę, spawny i strefy na prawdziwe piętro. Ostrzega o punktach trasy na
+   zablokowanych polach.
+
+Pliki pięter są pobierane raz do `data/tibiamaps/`.
+
+Trasa na mapie jest rysowana po polach, którymi druid naprawdę pójdzie (najkrótsza droga wokół
+ścian). Czerwona przerywana linia oznacza brak przejścia między punktami.
+
+**Steruje: reguły (bez modelu)**: skryptowa walka do testowania tras i taktyki bez trenowania:
+leczenie i mikstury, zejście z fali/belki, Avalanche przy 3+ potworach, Exori w słabszy żywioł,
+SD na zdrowe cele, odejście z kontaktu na cooldownie. Moduł `rl_twin/rules.py`.
+
 ## MapParser (PNG → siatka)
 
 1. Obraz wczytywany jako RGBA (Pillow, awaryjnie Qt `QImage`).
