@@ -16,6 +16,7 @@ POTION_NORMALIZER = 100   # potions_left saturates at this count
 RUNE_NORMALIZER = 100     # sd_runes_left saturates at this count
 PATH_NORMALIZER = 100.0   # waypoint_path_distance saturates at this travel cost
 CLUSTER_NORMALIZER = 5    # avalanche_best_hits saturates at this many monsters
+TACTICAL_STATES = ("lure", "pull", "fight", "escape", "recover", "return")
 STEP_MS_NORMALIZER = 1000.0
 MODIFIER_NORMALIZER = 200.0
 
@@ -47,6 +48,8 @@ SCALAR_FEATURES = [
     "monster_has_aoe", "monster_spell_cooldown", "danger_here",
     "waypoint_path_dx", "waypoint_path_dy", "waypoint_path_distance",
     "cooldown_avalanche", "avalanche_runes_left", "avalanche_best_hits", "waypoint_floor_delta",
+    "state_lure", "state_pull", "state_fight", "state_escape", "state_recover", "state_return",
+    "in_arena", "arena_dx", "arena_dy", "orbit_dx", "orbit_dy",
 ]
 _WINDOW = [(dx, dy) for dy in range(-VIEW_RADIUS, VIEW_RADIUS + 1)
            for dx in range(-VIEW_RADIUS, VIEW_RADIUS + 1)]
@@ -103,6 +106,9 @@ class GameSnapshot:
     waypoint_path: tuple = None    # (dx, dy, cost) from physics.path_direction toward the next waypoint
     avalanche_runes: int = 0
     avalanche_hits: int = 0        # monsters the best Avalanche aim would hit right now
+    tactical_state: str = None     # tactics.STATES value, None when the hybrid controller is off
+    arena: tuple = None            # (dx, dy, inside) toward the nearest arena centre
+    orbit: tuple = None            # (dx, dy) unit tangent of the nearest orbit circle
 
 
 def _visible(snap, m):
@@ -180,6 +186,14 @@ def encode_observation(snap):
     obs[49] = min(snap.avalanche_hits, CLUSTER_NORMALIZER) / CLUSTER_NORMALIZER
     if snap.next_waypoint is not None:
         obs[50] = float(np.clip(snap.next_waypoint[2] - snap.player_z, -1, 1))
+    if snap.tactical_state in TACTICAL_STATES:
+        obs[51 + TACTICAL_STATES.index(snap.tactical_state)] = 1.0
+    if snap.arena is not None:
+        obs[57] = 1.0 if snap.arena[2] else 0.0
+        obs[58] = np.clip(snap.arena[0] / VIEW_RANGE_X, -1, 1)
+        obs[59] = np.clip(snap.arena[1] / VIEW_RANGE_Y, -1, 1)
+    if snap.orbit is not None:
+        obs[60], obs[61] = snap.orbit
 
     # Local window, out-of-bounds counts as blocked
     r = VIEW_RADIUS

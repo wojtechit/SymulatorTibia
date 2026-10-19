@@ -24,6 +24,8 @@ from .entities import GROUND_FLOOR, Druid, Monster
 from .items import ItemDatabase
 from .monsters import MonsterDatabase
 from .rewards import Economy, RewardConfig
+from .tactics import (ESCAPE, FIGHT, PULL, RECOVER, STATE_LABELS_PL, TacticalController, TacticsConfig,
+                      orbit_tangent, zone_contains)
 from .terrain import decode_speed
 from .observation import ACTION_NAMES, OBS_SIZE, VIEW_RADIUS, GameSnapshot, MonsterView, encode_observation
 from .physics import (
@@ -122,6 +124,9 @@ class EnvConfig:
     exp_rate: float = 1.0                           # server experience stage / boost multiplier
     terrain_speed: dict = field(default_factory=dict)   # {"7": base64 uint16 ground speed per tile}
     transitions: list = field(default_factory=list)     # [[x, y, z, x2, y2, z2], ...] stairs / holes / ladders
+    zones: list = field(default_factory=list)           # tactics.make_zone dicts (lure / arena / orbit)
+    tactics: TacticsConfig = field(default_factory=TacticsConfig)
+    world_origin: list = field(default_factory=lambda: [0, 0])   # world (x, y) of tile [0, 0] for scripts
     seed: int = None
     rewards: RewardConfig = field(default_factory=RewardConfig)
 
@@ -134,7 +139,10 @@ class EnvConfig:
     @classmethod
     def from_dict(cls, data):
         data = dict(data)
-        rewards = RewardConfig(**data.pop("rewards", {}))
+        rewards = RewardConfig(**{k: v for k, v in data.pop("rewards", {}).items()
+                                  if k in RewardConfig.__dataclass_fields__})
+        tactics = TacticsConfig(**{k: v for k, v in data.pop("tactics", {}).items()
+                                   if k in TacticsConfig.__dataclass_fields__})
         floor = int(data.get("floor", GROUND_FLOOR))
         # Phase 1 scenarios: 2D waypoints/spawns and an obstacle list
         data["waypoints"] = [list(w) + [floor] if len(w) == 2 else list(w) for w in data.get("waypoints", [])]
@@ -147,7 +155,7 @@ class EnvConfig:
                     grid[y, x] = 1
             data["collision"] = {str(floor): grid_to_rows(grid)}
         known = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
-        return cls(rewards=rewards, **known)
+        return cls(rewards=rewards, tactics=tactics, **known)
 
     @classmethod
     def from_json(cls, text):
@@ -186,6 +194,10 @@ class DruidHuntEnv:
         self.transitions = {(int(t[0]), int(t[1]), int(t[2])): (int(t[3]), int(t[4]), int(t[5]))
                             for t in self.config.transitions}
         self.economy = None
+        self.tactics = TacticalController(self.config.tactics, [dict(z) for z in self.config.zones])
+        self.last_action = None
+        self.last_controlled = False
+        self._route_fields = {}
         self.waypoints = [tuple(int(v) for v in w[:3]) for w in self.config.waypoints]
         self.waypoints = [w for w in self.waypoints if self._walkable_static(*w)]
         self.druid = None
@@ -213,7 +225,11 @@ class DruidHuntEnv:
         rod = self.item_db.rod(cfg.rod) if cfg.rod else None
         self.druid = Druid(cfg.level, cfg.magic_level, cfg.armor, cfg.mana_potions, x, y, z,
                            rod=rod, sd_runes=cfg.sd_runes, avalanche_runes=cfg.avalanche_runes)
-        self.economy = Economy(self.item_db.supply_prices(), cfg.exp_rate)
+        self.economy = Economy(self.item_db.supply_prices(), cfg.exp_rate, cfg.rewards.exp_gold_value)
+        self.tactics.reset(self.druid.z)
+        if self.tactics.config.enabled and not self.escape_routes(self.druid.z):
+            self._event("warn", f"Taktyka: brak schodów/dziur na piętrze {self.druid.z} - awaryjna ucieczka niemożliwa "
+                                f"(wczytaj sąsiednie piętro, żeby połączyć przejścia).")
         self.monsters = self._create_monsters()
         self.time_ms = 0
         self.steps = 0
@@ -239,7 +255,12 @@ class DruidHuntEnv:
         if not self.action_space.contains(action):
             raise ValueError(f"Invalid action: {action}")
         self.events = []
-        reward, elapsed = self._apply_action(int(action))
+        reward = self._tactical_update()
+        action, controlled = self.tactics.choose_action(self, int(action))
+        self.last_action, self.last_controlled = action, controlled
+        reward += self._aoe_discipline(action)
+        step_reward, elapsed = self._apply_action(int(action))
+        reward += step_reward
         reward += self._simulate_world(elapsed)
         reward += self.config.rewards.step * elapsed / TIME_UNIT_MS
 
@@ -297,7 +318,10 @@ class DruidHuntEnv:
             druid.use_rune(rune, now)
             reward = -self._spend("sudden_death_rune")
             raw = rune.roll(druid.level, druid.magic_level, self.rng)
-            return reward + self._hit_monster(target, raw, rune.element, f"{rune.name} [{druid.sd_runes}]"), DECISION_MS
+            hp_before = target.hp
+            reward += self._hit_monster(target, raw, rune.element, f"{rune.name} [{druid.sd_runes}]")
+            self._book_overkill("sudden_death_rune", [(target, hp_before)])
+            return reward, DECISION_MS
 
         if action == ACTION_USE_AVALANCHE:
             aim = self._avalanche_aim()
@@ -311,8 +335,10 @@ class DruidHuntEnv:
                 self.aoe_flashes.append(([(cx + dx, cy + dy) for dx, dy in AVALANCHE_AREA], druid.z, "ice",
                                          now + 600))
             self._event("attack", f"Avalanche [{druid.avalanche_runes}] na ({cx}, {cy}): trafia {len(targets)} potw.")
+            before = [(target, target.hp) for target in targets]
             for target in targets:
                 reward += self._hit_monster(target, raw, AVALANCHE.element, "Avalanche")
+            self._book_overkill("avalanche_rune", before)
             return reward, DECISION_MS
 
         if action == ACTION_HEAL:
@@ -328,7 +354,8 @@ class DruidHuntEnv:
         if action == ACTION_MANA_POTION:
             if not druid.can_drink_potion(now):
                 return rewards.invalid_action, DECISION_MS
-            restored = druid.drink_mana_potion(now, self.rng)
+            restored, rolled = druid.drink_mana_potion(now, self.rng)
+            self.economy.waste("great_mana_potion", 1 - restored / rolled)
             self._event("mana", f"Great Mana Potion: +{restored} many. "
                                 f"Mana: {druid.mana}/{druid.max_mana}. Zostało: {druid.potions}.")
             return -self._spend("great_mana_potion"), DECISION_MS
@@ -352,6 +379,125 @@ class DruidHuntEnv:
         if rewards.loot_in_reward:
             reward += rewards.gold_scale * loot
         return reward + rewards.kill
+
+    def _book_overkill(self, supply, hits):
+        """Share of a rune's damage that landed beyond the targets' remaining HP is wasted gold."""
+        damage = sum(getattr(m, "last_damage", 0) for m, _ in hits)
+        useful = sum(min(getattr(m, "last_damage", 0), hp) for m, hp in hits)
+        if damage > 0:
+            self.economy.waste(supply, (damage - useful) / damage)
+
+    # ----- hybrid tactics -------------------------------------------------- #
+
+    def _tactical_update(self):
+        """Advance the tactical state machine; returns shaping reward for completed transitions."""
+        change = self.tactics.update(self)
+        if change is None:
+            return 0.0
+        old, new = change
+        rewards = self.config.rewards
+        self._event("system", f"Taktyka: {STATE_LABELS_PL[old]} -> {STATE_LABELS_PL[new]}"
+                              f" (HP {self.druid.hp_ratio * 100:.0f}%, potwory {len(self.aggressive_monsters())}).")
+        if new == FIGHT and old in ("lure", PULL):
+            return rewards.lure_bonus * len(self.aggressive_monsters())
+        if old == ESCAPE and new == RECOVER:
+            return rewards.escape_success
+        return 0.0
+
+    def _aoe_discipline(self, action):
+        """Penalise single-target attacks while a usable Avalanche would hit a whole pack."""
+        if action not in (ACTION_EXORI_FRIGO, ACTION_EXORI_TERA, ACTION_USE_SD):
+            return 0.0
+        rewards = self.config.rewards
+        if not self.druid.can_use_rune(AVALANCHE, self.time_ms):
+            return 0.0
+        aim = self._avalanche_aim()
+        if aim and len(aim[1]) >= rewards.aoe_min_targets:
+            return rewards.aoe_missed
+        return 0.0
+
+    def _arena_vector(self):
+        druid = self.druid
+        arena = self.tactics.nearest_zone("arena", druid.x, druid.y, druid.z)
+        if arena is None:
+            return None
+        return arena["x"] - druid.x, arena["y"] - druid.y, zone_contains(arena, druid.x, druid.y, druid.z)
+
+    def _orbit_vector(self):
+        druid = self.druid
+        orbit = self.tactics.nearest_zone("orbit", druid.x, druid.y, druid.z)
+        return None if orbit is None else orbit_tangent(orbit, druid.x, druid.y)
+
+    def aggressive_monsters(self):
+        druid = self.druid
+        return [m for m in self.monsters if m.alive and m.aggro and m.z == druid.z]
+
+    def escape_routes(self, z, toward=None):
+        """(x, y) of floor-change tiles on floor z, optionally only those leading toward floor `toward`."""
+        routes = []
+        for (x, y, tz), (_, _, target_z) in self.transitions.items():
+            if tz != z:
+                continue
+            if toward is not None and (target_z - z) * (toward - z) <= 0:
+                continue
+            routes.append((x, y))
+        return routes
+
+    def step_toward(self, goals):
+        """First (dx, dy) of the shortest path to any goal on the druid's floor (other stairs avoided)."""
+        if not goals:
+            return None
+        druid = self.druid
+        key = (druid.z, tuple(sorted(goals)))
+        field = self._route_fields.get(key)
+        if field is None:
+            walkable = self.collision(druid.z).copy()
+            goal_set = set(goals)
+            for (x, y, z) in self.transitions:
+                if z == druid.z and (x, y) not in goal_set:
+                    walkable[y, x] = 1
+            field = distance_field(walkable, list(goals), self.config.diagonal_multiplier)
+            self._route_fields[key] = field
+        return self._free_step(field)
+
+    def _free_step(self, field):
+        """Best neighbouring tile along `field` that is not blocked right now (walls, monsters)."""
+        druid = self.druid
+        rows, cols = field.shape
+        here = float(field[druid.y, druid.x])
+        if here == 0.0 or here == float("inf"):
+            return None
+        options = []
+        for dx, dy in MOVE_DELTAS.values():
+            nx, ny = druid.x + dx, druid.y + dy
+            if 0 <= nx < cols and 0 <= ny < rows and field[ny, nx] < here:
+                cost = float(field[ny, nx]) + (self.config.diagonal_multiplier if dx and dy else 1.0)
+                options.append((cost, dx, dy))
+        for _, dx, dy in sorted(options):
+            if self._movement_blocker(druid.x + dx, druid.y + dy, druid.z) is None:
+                return dx, dy
+        return None
+
+    def waypoint_step(self):
+        if not self.waypoints or self._waypoint_path() is None:
+            return None
+        field = self._waypoint_fields.get((self.waypoint_index, self.druid.z))
+        return None if field is None or field is False else self._free_step(field)
+
+    @staticmethod
+    def move_action(step):
+        if step is None:
+            return ACTION_WAIT
+        return next(action for action, delta in MOVE_DELTAS.items() if delta == tuple(step))
+
+    def survival_action(self, heal_below, potion_below):
+        """Deterministic safety layer used outside FIGHT: heal first, then mana."""
+        druid, now = self.druid, self.time_ms
+        if druid.hp_ratio < heal_below and druid.can_cast(SPELLBOOK["exura_gran"], now):
+            return ACTION_HEAL
+        if druid.mana_ratio < potion_below and druid.can_drink_potion(now):
+            return ACTION_MANA_POTION
+        return None
 
     def _spend(self, supply):
         """Book a consumed supply; returns its reward cost (positive number)."""
@@ -672,6 +818,9 @@ class DruidHuntEnv:
             },
             avalanche_runes=druid.avalanche_runes,
             avalanche_hits=self._avalanche_hits(),
+            tactical_state=self.tactics.state if self.tactics.config.enabled else None,
+            arena=self._arena_vector(),
+            orbit=self._orbit_vector(),
             sd_runes=druid.sd_runes,
             rune_range=RUNE_RANGE,
             rod_equipped=rod is not None,
@@ -759,6 +908,14 @@ class DruidHuntEnv:
             "episode_reward": self.episode_reward,
             **self.economy.summary(self.time_ms),
             "hp_min_pct": round(self.hp_min_ratio * 100, 1),
+            "safety": round(self.hp_min_ratio * 100, 1) if druid.alive else 0.0,
+            "tactical_state": self.tactics.state if self.tactics.config.enabled else None,
+            "escapes": self.tactics.escapes,
+            "pulls": self.tactics.pulls,
+            "avg_pack": round(sum(self.tactics.pack_sizes) / len(self.tactics.pack_sizes), 2)
+            if self.tactics.pack_sizes else 0.0,
+            "action": self.last_action,
+            "controlled": self.last_controlled,
             "adjacent_pct": round(100.0 * self.adjacent_ms / self.time_ms, 1) if self.time_ms else 0.0,
             "heals": self.heals,
             "potions_per_hour": int(self.economy.per_hour(self.economy.used["great_mana_potion"], self.time_ms)),

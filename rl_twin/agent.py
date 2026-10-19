@@ -16,7 +16,7 @@ from .observation import ACTION_NAMES, FEATURE_NAMES, OBS_SIZE, VIEW_RADIUS
 from .physics import SERVER_TICK_MS, VIEW_RANGE_X, VIEW_RANGE_Y
 
 EXPORT_FORMAT = "rl_twin.dqn_policy"
-EXPORT_VERSION = 6
+EXPORT_VERSION = 7
 
 
 @dataclass

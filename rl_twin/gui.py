@@ -77,6 +77,8 @@ from .env import (
     grid_to_rows,
 )
 from .mapparser import DEFAULT_WALL_COLORS, MapParser, color_label, load_rgba, mask_to_cells, palette
+from .scripts import export_script, import_script
+from .tactics import DEFAULT_ZONE_RADIUS, STATE_LABELS_PL, ZONE_LABELS_PL, TacticsConfig, make_zone
 from .terrain import encode_speed, load_client_minimap, stairs_mask
 from .items import ItemDatabase
 from .monsters import MonsterDatabase
@@ -102,6 +104,8 @@ TOOL_WAYPOINT = "waypoint"
 TOOL_MONSTER = "monster"
 TOOL_OBSTACLE = "obstacle"
 TOOL_MOVE = "move"
+TOOL_LURE, TOOL_ARENA, TOOL_ORBIT = "lure", "arena", "orbit"
+ZONE_COLORS = {"lure": "#ffa726", "arena": "#ef5350", "orbit": "#26c6da"}
 MARKER_PICK_PX = 14   # click radius (screen pixels) for picking spawn / waypoint markers
 
 
@@ -223,6 +227,9 @@ class GridCanvas(QGraphicsView):
         self.stairs = {}             # z -> bool floor-change tiles (yellow on the minimap)
         self.transitions = []        # [[x, y, z, x2, y2, z2], ...] linked stairs / holes / ladders
         self.replaced_floors = []    # floors dropped by the last load_map (different map size)
+        self.zones = []              # tactics.make_zone dicts: lure / arena / orbit circles
+        self.zone_lure_limits = (3, 4)
+        self._zone_items = []
         self.sprites = None          # SpriteStore, set by the main window
 
         self.collision = {}          # z -> np.ndarray (rows, cols) uint8
@@ -322,10 +329,11 @@ class GridCanvas(QGraphicsView):
 
     def _snapshot(self):
         return ({z: g.copy() for z, g in self.collision.items()}, list(self.waypoints), dict(self.spawns),
-                {z: m.copy() for z, m in self.stairs.items()}, [list(t) for t in self.transitions])
+                {z: m.copy() for z, m in self.stairs.items()}, [list(t) for t in self.transitions],
+                [dict(zone) for zone in self.zones])
 
     def _restore(self, state):
-        self.collision, self.waypoints, self.spawns, self.stairs, self.transitions = state
+        self.collision, self.waypoints, self.spawns, self.stairs, self.transitions, self.zones = state
         self.refresh()
 
     def push_undo(self):
@@ -348,7 +356,47 @@ class GridCanvas(QGraphicsView):
         self._redraw_spawns()
         self._redraw_waypoints()
         self._redraw_transitions()
+        self._redraw_zones()
         self.scenario_changed.emit()
+
+    def _redraw_zones(self):
+        """Tactical zones: scene-space circles (scale with the map) and a fixed-size label at the centre."""
+        for item in self._zone_items:
+            self._scene.removeItem(item)
+        self._zone_items = []
+        for zone in self.zones:
+            if zone["z"] != self.floor:
+                continue
+            color = QColor(ZONE_COLORS[zone["kind"]])
+            cx, cy = zone["x"] * CELL + CELL / 2, zone["y"] * CELL + CELL / 2
+            r = (zone["radius"] + 0.5) * CELL
+            circle = QGraphicsEllipseItem(cx - r, cy - r, 2 * r, 2 * r)
+            pen = QPen(color, 2.5, Qt.DashLine if zone["kind"] == "orbit" else Qt.SolidLine)
+            pen.setCosmetic(True)
+            circle.setPen(pen)
+            fill = QColor(color)
+            fill.setAlpha(28 if zone["kind"] != "orbit" else 0)
+            circle.setBrush(QBrush(fill))
+            circle.setZValue(5)
+            self._scene.addItem(circle)
+            label_text = ZONE_LABELS_PL[zone["kind"]]
+            if zone["kind"] == "lure":
+                label_text += f" {zone['min']}-{zone['max']}"
+            label_text += f" r{zone['radius']}"
+            dot = QGraphicsEllipseItem(-6, -6, 12, 12)
+            dot.setFlag(QGraphicsEllipseItem.ItemIgnoresTransformations)
+            dot.setPos(cx, cy)
+            dot.setBrush(QBrush(color))
+            dot.setPen(QPen(QColor("#000000"), 1.5))
+            dot.setZValue(9)
+            text = QGraphicsSimpleTextItem(label_text, dot)
+            text.setFont(QFont("Sans", 8, QFont.Bold))
+            text.setBrush(QBrush(color.lighter(130)))
+            text.setPen(QPen(QColor("#000000"), 0.5))
+            text.setPos(8, 4)
+            dot.setToolTip(f"{label_text} - kółko myszy nad środkiem zmienia promień, PPM usuwa")
+            self._scene.addItem(dot)
+            self._zone_items += [circle, dot]
 
     def _set_floor_item(self, z, pixmap, scale, pos):
         old = self._floor_items.pop(z, None)
@@ -589,6 +637,10 @@ class GridCanvas(QGraphicsView):
         elif self.tool == TOOL_MONSTER and self.monster_type:
             self.spawns[key] = self.monster_type
             self._redraw_spawns()
+        elif self.tool in (TOOL_LURE, TOOL_ARENA, TOOL_ORBIT):
+            low, high = self.zone_lure_limits
+            self.zones.append(make_zone(self.tool, x, y, self.floor, DEFAULT_ZONE_RADIUS[self.tool], low, high))
+            self._redraw_zones()
         self.scenario_changed.emit()
 
     def marker_at(self, view_pos):
@@ -606,12 +658,31 @@ class GridCanvas(QGraphicsView):
                 dist = (center - view_pos).manhattanLength()
                 if dist < best_dist:
                     best, best_dist = ("waypoint", index), dist
+        for index, zone in enumerate(self.zones):
+            if zone["z"] == self.floor:
+                center = self.mapFromScene(zone["x"] * CELL + CELL / 2, zone["y"] * CELL + CELL / 2)
+                dist = (center - view_pos).manhattanLength()
+                if dist < best_dist:
+                    best, best_dist = ("zone", index), dist
+        return best
+
+    def zone_at(self, view_pos):
+        """Index of the zone whose centre is under the cursor (zones win over waypoints for the wheel)."""
+        best, best_dist = None, MARKER_PICK_PX + 4
+        for index, zone in enumerate(self.zones):
+            if zone["z"] == self.floor:
+                center = self.mapFromScene(zone["x"] * CELL + CELL / 2, zone["y"] * CELL + CELL / 2)
+                dist = (center - view_pos).manhattanLength()
+                if dist <= best_dist:
+                    best, best_dist = index, dist
         return best
 
     def delete_marker(self, marker):
         kind, key = marker
         if kind == "spawn":
             self.spawns.pop(key, None)
+        elif kind == "zone":
+            del self.zones[key]
         else:
             del self.waypoints[key]
         self.refresh()
@@ -627,6 +698,8 @@ class GridCanvas(QGraphicsView):
             if target in self.spawns and target != key:
                 return False
             self.spawns[target] = self.spawns.pop(key)
+        elif kind == "zone":
+            self.zones[key].update(x=x, y=y, z=self.floor)
         else:
             self.waypoints[key] = target
         self.refresh()
@@ -689,6 +762,7 @@ class GridCanvas(QGraphicsView):
         self.collision = {int(z): config.collision_grid(int(z)) for z in config.collision}
         self.speeds = {int(z): config.speed_grid(int(z)) for z in config.terrain_speed}
         self.transitions = [list(t) for t in config.transitions]
+        self.zones = [dict(zone) for zone in config.zones]
         self.waypoints = [tuple(int(v) for v in w[:3]) for w in config.waypoints]
         self.spawns = {(int(x), int(y), int(z)): name for x, y, z, name in config.spawns}
         self.refresh()
@@ -915,6 +989,13 @@ class GridCanvas(QGraphicsView):
         delta = event.angleDelta().y()
         if delta == 0:
             return
+        index = self.zone_at(event.pos()) if self.editing_enabled else None
+        if index is not None:                                   # wheel over a zone centre = radius
+            zone = self.zones[index]
+            zone["radius"] = max(1, min(30, zone["radius"] + (1 if delta > 0 else -1)))
+            self._redraw_zones()
+            self.scenario_changed.emit()
+            return
         factor = 1.15 if delta > 0 else 1 / 1.15
         if not self.MIN_ZOOM <= self._zoom * factor <= self.MAX_ZOOM:
             return
@@ -1136,6 +1217,7 @@ class MainWindow(QMainWindow):
         controls_layout.setContentsMargins(3, 0, 6, 0)
         controls_layout.addWidget(self._build_character_group())
         controls_layout.addWidget(self._build_editor_group())
+        controls_layout.addWidget(self._build_tactics_group())
         controls_layout.addWidget(self._build_mode_group())
         controls_layout.addWidget(self._build_model_group())
         controls_layout.addStretch(1)
@@ -1226,8 +1308,16 @@ class MainWindow(QMainWindow):
             radio.setChecked(i == 0)
             self.tool_group.addButton(radio)
             tools.addWidget(radio)
-        self.tool_group.buttonClicked.connect(lambda b, *_: setattr(self.canvas, "tool", b.property("tool")))
         layout.addLayout(tools)
+        zone_tools = QHBoxLayout()
+        for tool, text in ((TOOL_LURE, "Strefa Lure"), (TOOL_ARENA, "Arena walki"), (TOOL_ORBIT, "Orbita (kółko)")):
+            radio = QRadioButton(text)
+            radio.setProperty("tool", tool)
+            radio.setStyleSheet(f"color: {ZONE_COLORS[tool]};")
+            self.tool_group.addButton(radio)
+            zone_tools.addWidget(radio)
+        self.tool_group.buttonClicked.connect(lambda b, *_: setattr(self.canvas, "tool", b.property("tool")))
+        layout.addLayout(zone_tools)
 
         grid = QGridLayout()
         self.monster_combo = QComboBox()
@@ -1304,6 +1394,97 @@ class MainWindow(QMainWindow):
         layout.addLayout(buttons)
         return group
 
+    def _build_tactics_group(self):
+        group = QGroupBox("Taktyka (hybryda: automat + RL)")
+        layout = QVBoxLayout(group)
+        self.tactics_checkbox = QCheckBox("Automat taktyczny: lure → arena → walka (RL), ucieczka po schodach")
+        self.tactics_checkbox.setChecked(True)
+        layout.addWidget(self.tactics_checkbox)
+        grid = QGridLayout()
+        self.lure_min_input = self._spin(1, 20, 3)
+        self.lure_max_input = self._spin(1, 30, 4)
+        self.safe_max_input = self._spin(1, 40, 6)
+        self.escape_hp_input = self._spin(5, 95, 40)
+        self.escape_hp_input.setSuffix(" %")
+        self.recover_hp_input = self._spin(10, 100, 90)
+        self.recover_hp_input.setSuffix(" %")
+        self.recover_s_input = self._spin(0, 600, 30)
+        self.recover_s_input.setSuffix(" s")
+        self.origin_x_input = self._spin(0, 65_535, 0)
+        self.origin_y_input = self._spin(0, 65_535, 0)
+        for spin in (self.lure_min_input, self.lure_max_input):
+            spin.valueChanged.connect(lambda *_: setattr(
+                self.canvas, "zone_lure_limits", (self.lure_min_input.value(), self.lure_max_input.value())))
+        self.canvas.zone_lure_limits = (self.lure_min_input.value(), self.lure_max_input.value())
+        fields = [("Lure min potw.:", self.lure_min_input), ("Lure max potw.:", self.lure_max_input),
+                  ("Ucieczka przy HP <", self.escape_hp_input), ("…albo potworów >", self.safe_max_input),
+                  ("Powrót przy HP ≥", self.recover_hp_input), ("Min. czas na górze:", self.recover_s_input),
+                  ("Świat X pola [0,0]:", self.origin_x_input), ("Świat Y pola [0,0]:", self.origin_y_input)]
+        for i, (text, widget) in enumerate(fields):
+            row, col = divmod(i, 2)
+            grid.addWidget(QLabel(text), row, col * 2)
+            grid.addWidget(widget, row, col * 2 + 1)
+        layout.addLayout(grid)
+        hint = QLabel("Strefy rysujesz narzędziami Lure / Arena / Orbita; kółko myszy nad środkiem strefy = promień. "
+                      "Lure min/max dotyczą nowo stawianych stref Lure; poza nimi walka zaczyna się od 1 potwora.")
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        row = QHBoxLayout()
+        self.export_script_button = QPushButton("Eksport skryptu…")
+        self.export_script_button.setToolTip("Trasa + strefy we współrzędnych świata (.json albo .txt: 'Node (x, y, z)')")
+        self.export_script_button.clicked.connect(self.export_route_script)
+        self.import_script_button = QPushButton("Import skryptu…")
+        self.import_script_button.clicked.connect(self.import_route_script)
+        row.addWidget(self.export_script_button)
+        row.addWidget(self.import_script_button)
+        layout.addLayout(row)
+        self._tactics_inputs = [self.tactics_checkbox, self.lure_min_input, self.lure_max_input, self.safe_max_input,
+                                self.escape_hp_input, self.recover_hp_input, self.recover_s_input,
+                                self.origin_x_input, self.origin_y_input, self.import_script_button]
+        return group
+
+    def _tactics_config(self):
+        return TacticsConfig(
+            enabled=self.tactics_checkbox.isChecked(),
+            lure_min=1,
+            lure_max=self.lure_max_input.value(),
+            safe_max=self.safe_max_input.value(),
+            escape_hp=self.escape_hp_input.value() / 100.0,
+            recover_hp=self.recover_hp_input.value() / 100.0,
+            recover_ms=self.recover_s_input.value() * 1000,
+        )
+
+    def export_route_script(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Eksport skryptu", os.path.join(PROJECT_DIR, "trasa.json"),
+                                              "Skrypt rl_twin (*.json);;Tekst Node (x, y, z) (*.txt)")
+        if not path:
+            return
+        c = self.canvas
+        count = export_script(path, list(c.waypoints), c.zones, c.transitions,
+                              (self.origin_x_input.value(), self.origin_y_input.value()),
+                              name=os.path.splitext(os.path.basename(path))[0])
+        self.log("system", f"Wyeksportowano skrypt {os.path.basename(path)}: {count} punktów, {len(c.zones)} stref.")
+
+    def import_route_script(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Import skryptu", PROJECT_DIR, "Skrypty (*.json *.txt);;Wszystkie (*)")
+        if not path:
+            return
+        c = self.canvas
+        try:
+            waypoints, zones, skipped = import_script(path, (self.origin_x_input.value(), self.origin_y_input.value()),
+                                                      c.cols, c.rows)
+        except (OSError, ValueError, KeyError) as exc:
+            QMessageBox.warning(self, "Import skryptu", f"Nie udało się wczytać skryptu:\n{exc}")
+            return
+        c.push_undo()
+        c.waypoints = waypoints
+        if zones:
+            c.zones = zones
+        c.refresh()
+        self.log("system", f"Zaimportowano {len(waypoints)} punktów i {len(zones)} stref z {os.path.basename(path)}"
+                           + (f"; {skipped} poza mapą (sprawdź 'Świat X/Y pola [0,0]')." if skipped else "."))
+
     def _build_mode_group(self):
         group = QGroupBox("Tryb pracy")
         layout = QVBoxLayout(group)
@@ -1378,6 +1559,8 @@ class MainWindow(QMainWindow):
             ("loot", "Loot / zapasy:"), ("profit", "Bilans (gp):"),
             ("hp_min", "HP min:"), ("adjacent", "Obok potwora:"),
             ("pots_h", "Mikstury/h:"), ("runes_h", "Runy/h:"),
+            ("state", "Stan taktyczny:"), ("tactics", "Ucieczki / pulle / paczka:"),
+            ("waste", "Marnotrawstwo:"), ("safety", "Bezpieczeństwo:"),
         ])
         return page
 
@@ -1545,6 +1728,7 @@ class MainWindow(QMainWindow):
                        self.max_steps_input, self.utamo_checkbox, self.random_monsters_input,
                        self.rod_combo, self.sd_input, self.avalanche_input, self.exp_rate_input,
                        self.client_map_button,
+                       *self._tactics_inputs,
                        self.cell_px_input, self.tolerance_input, self.fraction_input,
                        self.diagonal_input, self.ground_speed_input,
                        self.load_map_button, self.reparse_button, self.clear_map_button,
@@ -1598,6 +1782,9 @@ class MainWindow(QMainWindow):
             terrain_speed={str(z): encode_speed(sp) for z, sp in canvas.speeds.items()
                            if sp.shape == (canvas.rows, canvas.cols) and (sp != DEFAULT_GROUND_SPEED).any()},
             transitions=[list(t) for t in canvas.transitions],
+            zones=[dict(zone) for zone in canvas.zones],
+            tactics=self._tactics_config(),
+            world_origin=[self.origin_x_input.value(), self.origin_y_input.value()],
         )
 
     # ----- manual / visual mode -------------------------------------------- #
@@ -1670,7 +1857,7 @@ class MainWindow(QMainWindow):
                 action = ACTION_WAIT if action is None else action
             self.obs, reward, terminated, truncated, info = env.step(action)
             self._log_env_events()
-            self._update_manual_status(info, reward, action)
+            self._update_manual_status(info, reward, info.get("action", action))   # executed action (automat may override)
             if terminated or truncated:
                 self._end_manual_episode(info)
                 break
@@ -1724,6 +1911,11 @@ class MainWindow(QMainWindow):
         v["adjacent"].setText(f"{info['adjacent_pct']:.1f}%")
         v["pots_h"].setText(str(info["potions_per_hour"]))
         v["runes_h"].setText(str(info["runes_per_hour"]))
+        state = info.get("tactical_state")
+        v["state"].setText(STATE_LABELS_PL.get(state, "wyłączony") if state else "wyłączony")
+        v["tactics"].setText(f"{info['escapes']} / {info['pulls']} / {info['avg_pack']:.1f}")
+        v["waste"].setText(f"{info['waste_pct']:.1f}% zapasów")
+        v["safety"].setText(f"{info['safety']:.0f}/100")
 
     def _log_env_events(self):
         if self.env is None:
@@ -2013,6 +2205,15 @@ class MainWindow(QMainWindow):
         self.sd_input.setValue(config.sd_runes)
         self.avalanche_input.setValue(config.avalanche_runes)
         self.exp_rate_input.setValue(config.exp_rate)
+        t = config.tactics
+        self.tactics_checkbox.setChecked(t.enabled)
+        self.lure_max_input.setValue(t.lure_max)
+        self.safe_max_input.setValue(t.safe_max)
+        self.escape_hp_input.setValue(int(round(t.escape_hp * 100)))
+        self.recover_hp_input.setValue(int(round(t.recover_hp * 100)))
+        self.recover_s_input.setValue(t.recover_ms // 1000)
+        self.origin_x_input.setValue(int(config.world_origin[0]))
+        self.origin_y_input.setValue(int(config.world_origin[1]))
         self.random_monsters_input.setValue(config.random_monster_count)
         self.diagonal_input.setValue(config.diagonal_multiplier)
         self.ground_speed_input.setValue(config.ground_speed)
@@ -2075,6 +2276,9 @@ class MainWindow(QMainWindow):
         self._client_minimap = params
         self._map_rgba = None
         self.floor_input.setValue(min(terrain.layers))
+        origin = terrain.layers[min(terrain.layers)].origin
+        self.origin_x_input.setValue(int(origin[0]))
+        self.origin_y_input.setValue(int(origin[1]))
         for z, layer in sorted(terrain.layers.items()):
             slow = int((layer.speed > 150).sum())
             self.log("system", f"{log_prefix}Piętro {z}: ściany {int(layer.walls.sum())}, wolne pola {slow}, "

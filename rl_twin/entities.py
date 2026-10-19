@@ -171,9 +171,11 @@ class Druid(Entity):
                 and self.cooldowns.remaining("potion", now_ms) == 0)
 
     def drink_mana_potion(self, now_ms, rng):
+        """Returns (restored, rolled): mana above the maximum is wasted."""
         self.potions -= 1
         self.cooldowns.set("potion", now_ms + POTION_EXHAUST_MS)
-        return self.restore_mana(rng.randint(*GREAT_MANA_POTION_RANGE))
+        rolled = rng.randint(*GREAT_MANA_POTION_RANGE)
+        return self.restore_mana(rolled), rolled
 
     def update_timers(self, now_ms):
         """Regeneration and buff expiry. Returns True when Utamo Vita expired."""
@@ -208,6 +210,7 @@ class Monster(Entity):
     def take_spell_damage(self, raw, element, rng):
         """Apply armor/resistance and subtract HP. Returns (dealt, percent)."""
         damage, percent = mitigate(raw, element, self.armor, self.resistances, rng)
+        self.last_damage = damage                 # before capping at remaining HP (overkill = waste)
         dealt = min(damage, self.hp)
         self.hp -= dealt
         return dealt, percent

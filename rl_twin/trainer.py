@@ -39,7 +39,9 @@ def run_training(env, agent, episodes, on_progress=None, should_stop=None, progr
         while not done:
             action = agent.act(obs)
             next_obs, reward, terminated, truncated, info = env.step(action)
-            agent.observe(obs, action, reward, next_obs, terminated)
+            # Learn from the action actually executed: controller-driven steps (lure, escape) act as demonstrations
+            executed = info.get("action")
+            agent.observe(obs, action if executed is None else executed, reward, next_obs, terminated)
             obs = next_obs
             done = terminated or truncated
         agent.episodes_trained += 1

@@ -93,6 +93,25 @@ python3 brainstem_example.py druid_policy.npz                                 # 
 - **Teren**: prędkość podłoża per pole (krok liczony z podłoża pola), schody/dziury/drabiny (żółte pola minimapy) łączone automatycznie z sąsiednim piętrem — wejście na pole zmienia piętro; nawigacja do punktu na innym piętrze prowadzi do właściwych schodów. Import folderu minimapy klienta (`Minimap_Color_*` + `Minimap_WaypointCost_*`, przycisk „Minimapa klienta…”): ściany, koszt pól (wolne pola = niebieski odcień), schody, tło każdego piętra. **Dekodowanie WaypointCost jest założeniem** (żółty = nieprzechodnie, magenta = nieodkryte, czerwony kanał = koszt względem najczęstszego) — sprawdź na swoich plikach.
 - **Edytor**: PgUp/PgDn = piętro, Ctrl+Z / Ctrl+Y = cofnij / ponów, Delete = usuń ostatni punkt trasy.
 
+## Taktyka hybrydowa (faza 7)
+
+`rl_twin/tactics.py`: automat stanów obok polityki RL. Sieć steruje **tylko w stanie WALKA** (mikro: pozycja, kiting, rotacja czarów/run); resztę robi automat, a trener uczy się z akcji faktycznie wykonanej (kroki automatu działają jak demonstracje).
+
+| Stan | Kto | Co |
+|---|---|---|
+| LURE | automat | idzie trasą; w strefie Lure zbiera min–max potworów (poza strefą walczy od 1); po 12 s bez pełnej paczki walczy i tak |
+| PULL | automat | prowadzi paczkę na najbliższą Arenę, czeka gdy wolne potwory zostają > 3 pola z tyłu („smycz”) |
+| WALKA | RL | walka w arenie; obserwacja: stan, wektor do areny, „w arenie”, styczna Orbity |
+| UCIECZKA | automat (nadpisuje RL) | HP < próg (40%) albo potworów > limit → najbliższe schody/dziura/drabina → zmiana piętra |
+| REGENERACJA | automat | leczy się i czeka do HP ≥ 90% i min. czasu (30 s) |
+| POWRÓT | automat | schodami na piętro polowania → LURE |
+
+Poza WALKĄ działa warstwa przetrwania (Exura Gran < 70% HP, mikstura < 60% many). Strefy rysujesz narzędziami **Strefa Lure / Arena walki / Orbita** (kółko myszy nad środkiem strefy = promień, PPM = usuń, Przesuń = przenieś).
+
+Nagrody: `lure_bonus` za każdy potwór doprowadzony do walki, `aoe_missed` za pojedynczy cel (Exori/SD), gdy gotowa Avalanche trafiłaby ≥ 3, `escape_success` za udaną ucieczkę. Metryki: ucieczki, pulle, średnia paczka, marnotrawstwo zapasów % (przelane mikstury, nadmiarowe obrażenia run w dobijanych potworach), ocena bezpieczeństwa (min HP, 0 po śmierci), wartość netto/h (`exp_gold_value` gp za 1 exp + zysk).
+
+Skrypty (`rl_twin/scripts.py`, „Eksport/Import skryptu”): `.json` (trasa z typami + strefy) albo `.txt` z liniami `Node (x, y, z)` / `Ladder` / `Hole` we współrzędnych świata (`Świat X/Y pola [0,0]`, ustawiane automatycznie z minimapy klienta). Import przyjmuje każdą linię z trzema liczbami.
+
 ## MapParser (PNG → siatka)
 
 1. Obraz wczytywany jako RGBA (Pillow, awaryjnie Qt `QImage`).
@@ -112,9 +131,9 @@ Wartości w `monsters.json` pochodzą z ogólnej wiedzy o Tibii i są **przybli�
 
 ## Format eksportu modelu
 
-`druid_policy.npz`: `W0,b0` (294→128), `W1,b1` (128→128), `W2,b2` (128→15) + `metadata` (JSON: `feature_names`, `action_names`, stałe obserwacji, `env_config`). Inferencja: `argmax(relu(relu(x@W0+b0)@W1+b1)@W2+b2)`. Przy zainstalowanym PyTorch dodatkowo `druid_policy.pt` zgodny z `nn.Sequential(Linear, ReLU, Linear, ReLU, Linear)`.
+`druid_policy.npz`: `W0,b0` (305→128), `W1,b1` (128→128), `W2,b2` (128→15) + `metadata` (JSON: `feature_names`, `action_names`, stałe obserwacji, `env_config`). Inferencja: `argmax(relu(relu(x@W0+b0)@W1+b1)@W2+b2)`. Przy zainstalowanym PyTorch dodatkowo `druid_policy.pt` zgodny z `nn.Sequential(Linear, ReLU, Linear, ReLU, Linear)`.
 
-W `brainstem.py`: wypełnij `GameSnapshot`, przepuść przez `encode_observation()` z `rl_twin/observation.py` (nie przepisuj — kolejność cech musi się zgadzać) i podaj do `BrainstemPolicy.act_name()`. Modele z wcześniejszych faz (119/7, 190/13, 198/14) nie mają obecnego układu (294 cechy, 15 akcji): `load_policy()` / `--resume` przenosi wagi po nazwach cech i akcji (stare zachowanie bez zmian, nowe cechy = 0, nowa akcja = neutralna, epsilon wraca do połowy). Nagroda zmieniła się na ekonomiczną, więc i tak dotrenuj. Mapę zagrożenia w `brainstem.py` licz tą samą funkcją `rl_twin.aoe.danger_window` (pozycje i kierunki potworów + czary z `monsters.json`).
+W `brainstem.py`: wypełnij `GameSnapshot`, przepuść przez `encode_observation()` z `rl_twin/observation.py` (nie przepisuj — kolejność cech musi się zgadzać) i podaj do `BrainstemPolicy.act_name()`. Modele z wcześniejszych faz (119/7, 190/13, 198/14) nie mają obecnego układu (305 cech, 15 akcji): `load_policy()` / `--resume` przenosi wagi po nazwach cech i akcji (stare zachowanie bez zmian, nowe cechy = 0, nowa akcja = neutralna, epsilon wraca do połowy). Nagroda zmieniła się na ekonomiczną, więc i tak dotrenuj. Mapę zagrożenia w `brainstem.py` licz tą samą funkcją `rl_twin.aoe.danger_window` (pozycje i kierunki potworów + czary z `monsters.json`).
 
 ## Sprite'y (AssetManager)
 
