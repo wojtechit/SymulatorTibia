@@ -77,6 +77,14 @@ python3 brainstem_example.py druid_policy.npz                                 # 
 - **Obserwacja (+8 cech):** cooldown SD, liczba run, czy jest różdżka, cooldown auto-ataku, czy cel jest w zasięgu różdżki/runy, modyfikator śmierci i żywiołu różdżki najbliższego potwora.
 - Wartości różdżek i wzór SD są przybliżone — zweryfikuj z TibiaWiki.
 
+## Czary potworów (faza 4)
+
+- `monsters.json` → `spells`: `beam` (linia, `length` pól), `wave` (stożek, szerokość 1→3→5 co `spread` pól), `ball` (koło o promieniu `radius` wokół celu w zasięgu `range`). Dragon: Fire Wave + Great Fireball; Dragon Lord: Fire Wave + Fire Beam + Great Fireball.
+- Potwory patrzą w jednym z 4 kierunków (ruch po ukosie ustawia je na wschód/zachód). Co `cooldown_ms` każdy czar losuje `chance`; rzucany jest tylko, gdy druid jest w obszarze (po obróceniu się potwora w jego stronę) i w linii wzroku. Obrażenia żywiołu idą bez pancerza: modyfikator → Utamo Vita → HP, −5 nagrody za trafienie.
+- Geometria w `rl_twin/aoe.py`: kształty liczone raz (cache), test trafienia = jedno sprawdzenie w zbiorze; pole dokładnie po ukosie od smoka jest poza belką i falą.
+- **Obserwacja (+8 cech, +81 pól):** kierunek patrzenia najbliższego potwora, wyrównanie poziome/pionowe/ukośne, czy ma czary obszarowe, czas do próby rzutu, „stoję w zagrożeniu”, oraz trzeci kanał okna 9×9 — mapa zagrożenia: 1 = pole, na którym fala/belka któregoś potwora by trafiła.
+- GUI: żółta kreska = kierunek patrzenia potwora, kolorowy błysk = obszar rzuconego czaru, checkbox „Strefy zagrożenia” pokazuje mapę z obserwacji agenta.
+
 ## MapParser (PNG → siatka)
 
 1. Obraz wczytywany jako RGBA (Pillow, awaryjnie Qt `QImage`).
@@ -92,9 +100,9 @@ Wartości w `monsters.json` pochodzą z ogólnej wiedzy o Tibii i są **przybli�
 
 ## Format eksportu modelu
 
-`druid_policy.npz`: `W0,b0` (198→128), `W1,b1` (128→128), `W2,b2` (128→14) + `metadata` (JSON: `feature_names`, `action_names`, stałe obserwacji, `env_config`). Inferencja: `argmax(relu(relu(x@W0+b0)@W1+b1)@W2+b2)`. Przy zainstalowanym PyTorch dodatkowo `druid_policy.pt` zgodny z `nn.Sequential(Linear, ReLU, Linear, ReLU, Linear)`.
+`druid_policy.npz`: `W0,b0` (287→128), `W1,b1` (128→128), `W2,b2` (128→14) + `metadata` (JSON: `feature_names`, `action_names`, stałe obserwacji, `env_config`). Inferencja: `argmax(relu(relu(x@W0+b0)@W1+b1)@W2+b2)`. Przy zainstalowanym PyTorch dodatkowo `druid_policy.pt` zgodny z `nn.Sequential(Linear, ReLU, Linear, ReLU, Linear)`.
 
-W `brainstem.py`: wypełnij `GameSnapshot`, przepuść przez `encode_observation()` z `rl_twin/observation.py` (nie przepisuj — kolejność cech musi się zgadzać) i podaj do `BrainstemPolicy.act_name()`. Modele z wcześniejszych faz (119/7, 190/13) nie pasują do fazy 3 (198 cech, 14 akcji) — trzeba je wytrenować od nowa.
+W `brainstem.py`: wypełnij `GameSnapshot`, przepuść przez `encode_observation()` z `rl_twin/observation.py` (nie przepisuj — kolejność cech musi się zgadzać) i podaj do `BrainstemPolicy.act_name()`. Modele z wcześniejszych faz (119/7, 190/13, 198/14) nie pasują do fazy 4 (287 cech, 14 akcji) — trzeba je wytrenować od nowa. Mapę zagrożenia w `brainstem.py` licz tą samą funkcją `rl_twin.aoe.danger_window` (pozycje i kierunki potworów + czary z `monsters.json`).
 
 ## Sprite'y (AssetManager)
 

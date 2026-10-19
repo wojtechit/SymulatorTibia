@@ -4,7 +4,7 @@ import json
 import os
 from dataclasses import dataclass, field
 
-from .combat import ELEMENTS
+from .combat import ELEMENTS, MONSTER_SPELL_TYPES, MonsterSpell
 
 DEFAULT_MONSTERS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "monsters.json")
 REQUIRED_FIELDS = ("name", "hp", "exp", "speed", "armor", "elemental_resistances")
@@ -24,6 +24,7 @@ class MonsterTemplate:
     melee_max: int = 0
     attack_interval_ms: int = 2000
     sprite: str = None   # TibiaWiki file name override, e.g. "Demon.gif"
+    spells: tuple = ()   # MonsterSpell, cast in addition to melee
 
     def modifier(self, element):
         return self.resistances.get(element, 100) / 100.0
@@ -88,7 +89,36 @@ class MonsterDatabase:
             melee_max=int(melee[1]),
             attack_interval_ms=int(entry.get("attack_interval_ms", 2000)),
             sprite=entry.get("sprite"),
+            spells=tuple(MonsterDatabase._parse_spell(entry["name"], s) for s in entry.get("spells", [])),
         )
+
+    @staticmethod
+    def _parse_spell(monster, entry):
+        kind = str(entry.get("type", "")).lower()
+        element = str(entry.get("element", "")).lower()
+        if kind not in MONSTER_SPELL_TYPES or element not in ELEMENTS:
+            raise ValueError(f"Monster {monster}: invalid spell type/element in {entry}")
+        low, high = int(entry["damage"][0]), int(entry["damage"][1])
+        spell = MonsterSpell(
+            name=str(entry.get("name", kind)),
+            type=kind,
+            element=element,
+            damage_min=low,
+            damage_max=high,
+            cooldown_ms=int(entry.get("cooldown_ms", 2000)),
+            chance=int(entry.get("chance", 100)),
+            length=int(entry.get("length", 0)),
+            spread=int(entry.get("spread", 0)),
+            range=int(entry.get("range", 0)),
+            radius=int(entry.get("radius", 0)),
+        )
+        invalid = (low > high or not 0 <= spell.chance <= 100
+                   or (kind in ("beam", "wave") and spell.length < 1)
+                   or (kind == "wave" and spell.spread < 1)
+                   or (kind == "ball" and (spell.range < 1 or spell.radius < 1)))
+        if invalid:
+            raise ValueError(f"Monster {monster}: invalid parameters for spell {spell.name}")
+        return spell
 
     def names(self):
         return list(self._templates)

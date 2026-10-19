@@ -84,6 +84,11 @@ MAP_FILE = os.path.join(PROJECT_DIR, "map.png")
 SPRITES_DIR = os.path.join(PROJECT_DIR, "sprites")
 SPRITE_SIZE = CELL
 
+ELEMENT_COLORS = {
+    "fire": (255, 120, 0), "ice": (80, 190, 255), "earth": (90, 200, 60), "energy": (190, 90, 255),
+    "death": (120, 120, 140), "holy": (255, 230, 120), "physical": (220, 220, 220),
+}
+
 TOOL_WAYPOINT = "waypoint"
 TOOL_MONSTER = "monster"
 TOOL_OBSTACLE = "obstacle"
@@ -219,6 +224,8 @@ class GridCanvas(QGraphicsView):
         self._druid_item = None
         self._range_item = None
         self._monster_items = []
+        self._overlay_items = []     # AoE flashes and danger map, rebuilt every sync
+        self.show_danger = False
 
         self._scene.setSceneRect(0, 0, self.cols * CELL, self.rows * CELL)
         self._render_overlay()
@@ -462,7 +469,37 @@ class GridCanvas(QGraphicsView):
                             druid.utamo_active, druid.alive and druid.z == self.floor)
         for monster, item in zip(env.monsters, self._monster_items):
             self._update_entity(item, monster.x, monster.y, monster.hp_ratio, None, False,
-                                monster.alive and monster.z == self.floor)
+                                monster.alive and monster.z == self.floor, facing=monster.facing)
+        self._draw_combat_overlays(env)
+
+    def _draw_combat_overlays(self, env):
+        """Flash monster spell areas for AOE_FLASH_MS and optionally show the agent's danger map."""
+        for item in self._overlay_items:
+            self._scene.removeItem(item)
+        self._overlay_items = []
+        env.aoe_flashes = [f for f in env.aoe_flashes if f[3] > env.time_ms]
+        for tiles, z, element, _until in env.aoe_flashes:
+            if z != self.floor:
+                continue
+            color = QColor(*ELEMENT_COLORS.get(element, (255, 255, 255)), 120)
+            for tx, ty in tiles:
+                if self._in_bounds(tx, ty):
+                    self._add_overlay_rect(tx, ty, QBrush(color), QPen(Qt.NoPen), 12)
+        if self.show_danger and env.druid.z == self.floor:
+            danger = env.snapshot().danger
+            radius = danger.shape[0] // 2
+            pen = QPen(QColor(255, 82, 82, 220), 2, Qt.DashLine)
+            for wy, wx in zip(*np.nonzero(danger)):
+                tx, ty = env.druid.x - radius + int(wx), env.druid.y - radius + int(wy)
+                self._add_overlay_rect(tx, ty, QBrush(QColor(255, 82, 82, 35)), pen, 11)
+
+    def _add_overlay_rect(self, tx, ty, brush, pen, z):
+        rect = QGraphicsRectItem(tx * CELL + 1, ty * CELL + 1, CELL - 2, CELL - 2)
+        rect.setBrush(brush)
+        rect.setPen(pen)
+        rect.setZValue(z)
+        self._scene.addItem(rect)
+        self._overlay_items.append(rect)
 
     def _make_entity(self, color, label, z, mana_bar=False):
         r = CELL / 2 - 4
@@ -483,12 +520,16 @@ class GridCanvas(QGraphicsView):
         shield = QGraphicsEllipseItem(-r - 4, -r - 4, 2 * r + 8, 2 * r + 8, body)
         shield.setPen(QPen(QColor("#40c4ff"), 2, Qt.DashLine))
         shield.setVisible(False)
+        facing = None
+        if not mana_bar:
+            facing = QGraphicsLineItem(0, 0, 0, r + 6, body)
+            facing.setPen(QPen(QColor("#ffd740"), 3, Qt.SolidLine, Qt.RoundCap))
         text = QGraphicsSimpleTextItem(label, body)
         text.setFont(QFont("Sans", 6, QFont.Bold))
         text.setBrush(QBrush(QColor("#ffffff")))
         text.setPos(-text.boundingRect().width() / 2, -r - 19)
         self._scene.addItem(body)
-        item.update(hp=hp, mana=mana, shield=shield)
+        item.update(hp=hp, mana=mana, shield=shield, facing=facing)
         self._attach_sprite(item)
         return item
 
@@ -526,7 +567,7 @@ class GridCanvas(QGraphicsView):
         self._redraw_spawns()
 
     @staticmethod
-    def _update_entity(item, x, y, hp_ratio, mana_ratio, shield, visible):
+    def _update_entity(item, x, y, hp_ratio, mana_ratio, shield, visible, facing=None):
         body = item["body"]
         body.setVisible(visible)
         if not visible:
@@ -540,6 +581,9 @@ class GridCanvas(QGraphicsView):
         if item["mana"] is not None and mana_ratio is not None:
             item["mana"].setRect(-15, -r - 4, 30 * max(0.0, min(1.0, mana_ratio)), 3)
         item["shield"].setVisible(shield)
+        if item.get("facing") is not None and facing is not None:
+            reach = r + 6
+            item["facing"].setLine(0, 0, facing[0] * reach, facing[1] * reach)
 
     def _clear_monsters(self):
         for item in self._monster_items:
@@ -548,6 +592,9 @@ class GridCanvas(QGraphicsView):
 
     def clear_entities(self):
         self._clear_monsters()
+        for item in self._overlay_items:
+            self._scene.removeItem(item)
+        self._overlay_items = []
         if self._druid_item is not None:
             self._scene.removeItem(self._druid_item["body"])
             self._scene.removeItem(self._range_item)
@@ -986,6 +1033,10 @@ class MainWindow(QMainWindow):
             self.speed_combo.addItem(label, factor)
         self.speed_combo.setCurrentIndex(1)
         row.addWidget(self.agent_control_checkbox)
+        self.danger_checkbox = QCheckBox("Strefy zagrożenia")
+        self.danger_checkbox.setToolTip("Pokaż pola w zasięgu fal/belek potworów - to samo widzi agent w obserwacji")
+        self.danger_checkbox.toggled.connect(lambda on: setattr(self.canvas, "show_danger", on))
+        row.addWidget(self.danger_checkbox)
         row.addWidget(QLabel("Prędkość:"))
         row.addWidget(self.speed_combo)
         layout.addLayout(row)

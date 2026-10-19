@@ -189,6 +189,9 @@ class Monster(Entity):
         self.attack_interval_ms = template.attack_interval_ms
         self.aggro = False
         self.next_attack_ms = 0
+        self.facing = (0, 1)                       # cardinal (dx, dy); spawns facing south
+        self.next_spell_ms = [0] * len(template.spells)
+        self.directional_spells = tuple(s for s in template.spells if s.type in ("beam", "wave"))
 
     def roll_melee(self, rng):
         return rng.randint(self.template.melee_min, self.template.melee_max)

@@ -17,11 +17,12 @@ from dataclasses import asdict, dataclass, field
 
 import numpy as np
 
+from .aoe import SPELL_BALL, danger_window, facing_after_step, facing_toward, spell_area, spell_hits
 from .combat import ELEMENT_LABELS_PL, PHYSICAL, SPELLBOOK, UTAMO_VITA_DURATION_MS, POTION_EXHAUST_MS
 from .entities import GROUND_FLOOR, Druid, Monster
 from .items import ItemDatabase
 from .monsters import MonsterDatabase
-from .observation import ACTION_NAMES, OBS_SIZE, GameSnapshot, MonsterView, encode_observation
+from .observation import ACTION_NAMES, OBS_SIZE, VIEW_RADIUS, GameSnapshot, MonsterView, encode_observation
 from .physics import (
     DEFAULT_DIAGONAL_MULTIPLIER,
     DEFAULT_GROUND_SPEED,
@@ -34,6 +35,7 @@ from .physics import (
 )
 
 DECISION_MS = 100          # game time consumed by a non-movement action
+AOE_FLASH_MS = 600         # how long the GUI shows a monster spell area
 TIME_UNIT_MS = 500         # the -1 step penalty is charged per 500 ms of game time
 
 ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT = 0, 1, 2, 3
@@ -175,6 +177,7 @@ class DruidHuntEnv:
         self.druid = None
         self.monsters = []
         self.events = []
+        self.aoe_flashes = []    # (tiles, z, element, until_ms) for the visualizer; only with record_events
         self.time_ms = 0
         self.steps = 0
         self.waypoint_index = 0
@@ -202,6 +205,7 @@ class DruidHuntEnv:
         self.damage_taken = 0
         self.episode_reward = 0.0
         self.events = []
+        self.aoe_flashes = []
         if rod is not None and self.druid.rod is None:
             self._event("warn", f"{rod.name} wymaga poziomu {rod.level} - walczę bez różdżki.")
         if cfg.sd_runes and self.druid.magic_level < SPELLBOOK["sudden_death"].min_magic_level:
@@ -362,6 +366,8 @@ class DruidHuntEnv:
                     continue
                 monster.aggro = True
                 monster.next_attack_ms = now + monster.attack_interval_ms // 2
+                for i, spell in enumerate(monster.template.spells):
+                    monster.next_spell_ms[i] = now + self.rng.randint(SERVER_TICK_MS, spell.cooldown_ms)
                 self._event("warn", f"{monster.name} zauważa druida!")
             elif not visible:
                 monster.aggro = False
@@ -371,11 +377,44 @@ class DruidHuntEnv:
             if monster.distance_to(druid) > 1 and now >= monster.next_move_ms:
                 self._monster_step(monster, now)
 
+            if monster.template.spells:
+                reward += self._monster_cast(monster, now)
+                if not druid.alive:
+                    break
+
             if monster.distance_to(druid) <= 1 and now >= monster.next_attack_ms:
                 monster.next_attack_ms = now + monster.attack_interval_ms
                 reward += self._monster_melee(monster)
                 if not druid.alive:
                     break
+        return reward
+
+    def _monster_cast(self, monster, now):
+        """Each spell rolls its chance every cooldown_ms; it fires only if the druid is inside its area."""
+        druid = self.druid
+        reward = 0.0
+        dx, dy = druid.x - monster.x, druid.y - monster.y
+        for i, spell in enumerate(monster.template.spells):
+            if now < monster.next_spell_ms[i]:
+                continue
+            monster.next_spell_ms[i] = now + spell.cooldown_ms
+            if self.rng.random() * 100 >= spell.chance:
+                continue
+            facing = monster.facing if spell.type == SPELL_BALL else facing_toward(dx, dy, monster.facing)
+            if not spell_hits(spell, facing, dx, dy):
+                continue
+            if not has_line_of_sight(self._grid_list(monster.z), monster.x, monster.y, druid.x, druid.y):
+                continue
+            monster.facing = facing
+            result = druid.take_damage(spell.roll(self.rng), spell.element, self.rng)
+            if self.record_events:
+                cx, cy = (druid.x, druid.y) if spell.type == SPELL_BALL else (monster.x, monster.y)
+                tiles = [(cx + ox, cy + oy) for ox, oy in spell_area(spell, facing)]
+                self.aoe_flashes.append((tiles, monster.z, spell.element, now + AOE_FLASH_MS))
+            reward += self._register_player_damage(f"{monster.name}: {spell.name} "
+                                                   f"({ELEMENT_LABELS_PL[spell.element]})", result)
+            if not druid.alive:
+                break
         return reward
 
     def _monster_step(self, monster, now):
@@ -388,6 +427,7 @@ class DruidHuntEnv:
             return
         nx, ny = path[0]
         diagonal = is_diagonal(nx - monster.x, ny - monster.y)
+        monster.facing = facing_after_step(nx - monster.x, ny - monster.y, monster.facing)
         monster.move_to(nx, ny)
         duration = self._step_duration(monster, diagonal)
         monster.next_move_ms = now + (duration if duration else 10 ** 9)
@@ -398,21 +438,30 @@ class DruidHuntEnv:
         if raw <= 0:
             self._event("info", f"{monster.name} chybia.")
             return 0.0
+        monster.facing = facing_toward(druid.x - monster.x, druid.y - monster.y, monster.facing)
         result = druid.take_damage(raw, PHYSICAL, self.rng)
         if result.after_mitigation <= 0:
             self._event("info", f"{monster.name} uderza za {raw}, pancerz blokuje całość.")
             return 0.0
+        return self._register_player_damage(monster.name, result)
+
+    def _register_player_damage(self, source, result):
+        """Book-keeping, log line and -5 reward for any hit that reached mana or HP."""
+        if result.after_mitigation <= 0:
+            return 0.0
+        druid = self.druid
         self.damage_taken += result.after_mitigation
         if self.record_events:
-            armor_note = f" (pancerz: -{raw - result.after_mitigation})" if raw != result.after_mitigation else ""
+            armor_note = (f" (pancerz: -{result.raw - result.after_mitigation})"
+                          if result.raw != result.after_mitigation else "")
             if result.absorbed_by_mana and not result.shield_broken:
-                self._event("shield", f"{monster.name} zadaje {result.after_mitigation} obr.{armor_note} "
+                self._event("shield", f"{source} zadaje {result.after_mitigation} obr.{armor_note} "
                                       f"Pochłonięte przez Utamo Vita. Pozostała mana: {druid.mana}.")
             elif result.shield_broken:
-                self._event("damage", f"{monster.name} zadaje {result.after_mitigation} obr.{armor_note} "
+                self._event("damage", f"{source} zadaje {result.after_mitigation} obr.{armor_note} "
                                       f"TARCZA PĘKŁA! Do HP: {result.hp_damage}. HP: {druid.hp}/{druid.max_hp}.")
             else:
-                self._event("damage", f"{monster.name} zadaje {result.after_mitigation} obr.{armor_note} "
+                self._event("damage", f"{source} zadaje {result.after_mitigation} obr.{armor_note} "
                                       f"HP: {druid.hp}/{druid.max_hp}.")
         return self.config.rewards.damage_taken
 
@@ -524,9 +573,26 @@ class DruidHuntEnv:
                 line_of_sight=m.z == druid.z and has_line_of_sight(grid, druid.x, druid.y, m.x, m.y),
                 death_modifier=m.resistances.get("death", 100),
                 rod_modifier=m.resistances.get(rod.element, 100) if rod else 100,
+                facing=m.facing,
+                has_aoe=bool(m.template.spells),
+                spell_cooldown_ratio=self._spell_cooldown_ratio(m, now),
             ) for m in self.monsters if m.alive],
             next_waypoint=self.waypoints[self.waypoint_index] if self.waypoints else None,
+            danger=danger_window(
+                druid.x, druid.y, VIEW_RADIUS,
+                [(m.x, m.y, m.facing, m.directional_spells) for m in self.monsters
+                 if m.alive and m.z == druid.z and m.directional_spells
+                 and in_view(m.x, m.y, druid.x, druid.y)],
+                self.collision(druid.z), grid),
         )
+
+    @staticmethod
+    def _spell_cooldown_ratio(monster, now):
+        """0 = a spell attempt is due now, 1 = a full interval away (aggressive casters only)."""
+        spells = monster.template.spells
+        if not spells or not monster.aggro:
+            return 1.0
+        return min(max(0, t - now) / s.cooldown_ms for t, s in zip(monster.next_spell_ms, spells))
 
     def _observe(self):
         return encode_observation(self.snapshot())

@@ -41,11 +41,14 @@ SCALAR_FEATURES = [
     "aggro_count", "waypoint_dx", "waypoint_dy",
     "cooldown_sd", "sd_runes_left", "rod_equipped", "rod_cooldown",
     "monster_in_rod_range", "monster_in_rune_range", "monster_death_modifier", "monster_rod_modifier",
+    "monster_facing_dx", "monster_facing_dy", "aligned_horizontal", "aligned_vertical", "aligned_diagonal",
+    "monster_has_aoe", "monster_spell_cooldown", "danger_here",
 ]
 _WINDOW = [(dx, dy) for dy in range(-VIEW_RADIUS, VIEW_RADIUS + 1)
            for dx in range(-VIEW_RADIUS, VIEW_RADIUS + 1)]
 GRID_FEATURES = ([f"blocked_{dx}_{dy}" for dx, dy in _WINDOW]
-                 + [f"monster_{dx}_{dy}" for dx, dy in _WINDOW])
+                 + [f"monster_{dx}_{dy}" for dx, dy in _WINDOW]
+                 + [f"danger_{dx}_{dy}" for dx, dy in _WINDOW])
 FEATURE_NAMES = SCALAR_FEATURES + GRID_FEATURES
 OBS_SIZE = len(FEATURE_NAMES)
 
@@ -64,6 +67,9 @@ class MonsterView:
     line_of_sight: bool = True
     death_modifier: int = 100
     rod_modifier: int = 100        # modifier for the element of the equipped rod
+    facing: tuple = (0, 1)         # cardinal direction the monster looks at
+    has_aoe: bool = False          # owns beam / wave / ball spells
+    spell_cooldown_ratio: float = 1.0
 
 
 @dataclass
@@ -89,6 +95,7 @@ class GameSnapshot:
     collision: np.ndarray = None   # (rows, cols) uint8 for the player's floor, 1 = blocked
     monsters: list = field(default_factory=list)   # alive MonsterView, any floor
     next_waypoint: tuple = None    # (x, y, z) or None
+    danger: np.ndarray = None      # (2r+1, 2r+1) beam/wave threat map from aoe.danger_window, or None
 
 
 def _visible(snap, m):
@@ -145,6 +152,16 @@ def encode_observation(snap):
         obs[33] = 1.0 if dist <= snap.rune_range else 0.0
         obs[34] = nearest.death_modifier / MODIFIER_NORMALIZER
         obs[35] = nearest.rod_modifier / MODIFIER_NORMALIZER
+        ddx, ddy = nearest.x - px, nearest.y - py
+        obs[36] = nearest.facing[0]
+        obs[37] = nearest.facing[1]
+        obs[38] = 1.0 if ddy == 0 else 0.0
+        obs[39] = 1.0 if ddx == 0 else 0.0
+        obs[40] = 1.0 if abs(ddx) == abs(ddy) else 0.0
+        obs[41] = 1.0 if nearest.has_aoe else 0.0
+        obs[42] = nearest.spell_cooldown_ratio
+    if snap.danger is not None:
+        obs[43] = snap.danger[VIEW_RADIUS, VIEW_RADIUS]
 
     # Local window, out-of-bounds counts as blocked
     r = VIEW_RADIUS
@@ -162,6 +179,9 @@ def encode_observation(snap):
         if 0 <= wx < size and 0 <= wy < size:
             monsters[wy, wx] = 1.0
     base = len(SCALAR_FEATURES)
-    obs[base: base + size * size] = blocked.ravel()
-    obs[base + size * size:] = monsters.ravel()
+    cells = size * size
+    obs[base: base + cells] = blocked.ravel()
+    obs[base + cells: base + 2 * cells] = monsters.ravel()
+    if snap.danger is not None:
+        obs[base + 2 * cells:] = snap.danger.ravel()
     return obs

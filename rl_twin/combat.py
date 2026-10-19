@@ -73,6 +73,26 @@ SPELLBOOK = {
                         cooldown_ms=2000, group=GROUP_SUPPORT, group_cooldown_ms=2000),
 }
 UTAMO_VITA_DURATION_MS = 200_000
+MONSTER_SPELL_TYPES = ("beam", "wave", "ball")
+
+
+@dataclass(frozen=True)
+class MonsterSpell:
+    """Monster area attack. Every cooldown_ms the monster rolls `chance` and casts if the target is in the area."""
+    name: str
+    type: str                 # "beam" | "wave" | "ball"
+    element: str
+    damage_min: int
+    damage_max: int
+    cooldown_ms: int = 2000
+    chance: int = 100         # percent per attempt
+    length: int = 0           # beam / wave: tiles in front of the caster
+    spread: int = 0           # wave: the cone widens by 2 tiles every `spread` tiles
+    range: int = 0            # ball: max distance to the target
+    radius: int = 0           # ball: area radius around the target
+
+    def roll(self, rng):
+        return rng.randint(self.damage_min, self.damage_max)
 AUTO_ATTACK_INTERVAL_MS = 2000
 
 
