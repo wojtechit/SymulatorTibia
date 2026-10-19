@@ -1,6 +1,6 @@
 """
-PyQt5 digital twin: grid map editor, manual / agent visualizer (100 ms ticks)
-and background DQN training in a QThread.
+PyQt5 digital twin: map editor (collision grid per floor, PNG parser, spawns,
+waypoints), real-time manual / agent visualizer and background DQN training.
 """
 
 import html
@@ -8,14 +8,15 @@ import json
 import os
 import sys
 
+import numpy as np
 from PyQt5.QtCore import QEvent, QPoint, Qt, QThread, QTimer, pyqtSignal
-from PyQt5.QtGui import (QBrush, QColor, QFont, QPainter, QPainterPath,
-                         QPalette, QPen, QPixmap)
+from PyQt5.QtGui import QBrush, QColor, QFont, QImage, QPainter, QPainterPath, QPalette, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QButtonGroup,
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QGraphicsEllipseItem,
@@ -44,25 +45,35 @@ from PyQt5.QtWidgets import (
 )
 
 from .agent import DQNAgent
+from .entities import GROUND_FLOOR, Druid
 from .env import (
-    ACTION_ATTACK,
     ACTION_DOWN,
+    ACTION_DOWN_LEFT,
+    ACTION_DOWN_RIGHT,
+    ACTION_EXORI_FRIGO,
+    ACTION_EXORI_TERA,
     ACTION_HEAL,
     ACTION_LEFT,
     ACTION_MANA_POTION,
     ACTION_RIGHT,
     ACTION_UP,
-    MONSTER_TEMPLATES,
-    TICK_SECONDS,
-    Druid,
+    ACTION_UP_LEFT,
+    ACTION_UP_RIGHT,
+    ACTION_WAIT,
+    STRIKE_RANGE,
     DruidHuntEnv,
     EnvConfig,
+    grid_to_rows,
 )
-from .observation import ACTION_LABELS_PL, ATTACK_RANGE
+from .mapparser import ColorRule, MapParser, load_rgba
+from .monsters import MonsterDatabase
+from .observation import ACTION_LABELS_PL
+from .physics import DEFAULT_DIAGONAL_MULTIPLIER, DEFAULT_GROUND_SPEED, step_duration_ms
 from .trainer import run_training
 
-CELL = 32
+CELL = 32                       # scene units per tile
 VISUAL_TICK_MS = 100
+MAX_DECISIONS_PER_FRAME = 50
 DEFAULT_GRID = (32, 24)
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAP_FILE = os.path.join(PROJECT_DIR, "map.png")
@@ -72,8 +83,8 @@ TOOL_MONSTER = "monster"
 TOOL_OBSTACLE = "obstacle"
 
 
-def format_game_time(steps):
-    seconds = steps * TICK_SECONDS
+def format_game_time(ms):
+    seconds = ms / 1000.0
     minutes = int(seconds // 60)
     return f"{minutes:02d}:{seconds - minutes * 60:04.1f}"
 
@@ -83,13 +94,13 @@ def format_game_time(steps):
 # --------------------------------------------------------------------------- #
 
 class GridCanvas(QGraphicsView):
-    """LMB: use tool, RMB: erase cell, MMB drag: pan, wheel: zoom."""
+    """LMB: use tool, RMB: erase tile, MMB drag: pan, wheel: zoom. Shows one floor (Z) at a time."""
 
     scenario_changed = pyqtSignal()
     edit_blocked = pyqtSignal()
     cell_hovered = pyqtSignal(int, int)
 
-    MIN_ZOOM = 0.15
+    MIN_ZOOM = 0.05
     MAX_ZOOM = 6.0
 
     def __init__(self, parent=None):
@@ -105,18 +116,21 @@ class GridCanvas(QGraphicsView):
         self.setFocusPolicy(Qt.NoFocus)
 
         self.cols, self.rows = DEFAULT_GRID
+        self.floor = GROUND_FLOOR
         self.tool = TOOL_WAYPOINT
-        self.monster_type = "Giant Spider"
+        self.monster_type = None
         self.editing_enabled = True
         self.map_path = None
+        self.map_cell_px = CELL
 
-        self.obstacles = set()
-        self.waypoints = []
-        self.spawns = {}
-        self._obstacle_items = {}
-        self._spawn_items = {}
-        self._waypoint_items = []
+        self.collision = {}          # z -> np.ndarray (rows, cols) uint8
+        self.waypoints = []          # [(x, y, z)]
+        self.spawns = {}             # (x, y, z) -> monster name
         self._map_item = None
+        self._overlay_item = None
+        self._overlay_buffer = None
+        self._waypoint_items = []
+        self._spawn_items = {}
         self._zoom = 1.0
         self._panning = False
         self._pan_last = QPoint()
@@ -125,38 +139,77 @@ class GridCanvas(QGraphicsView):
         self._range_item = None
         self._monster_items = []
 
-        self.load_map(MAP_FILE if os.path.isfile(MAP_FILE) else None)
+        self._scene.setSceneRect(0, 0, self.cols * CELL, self.rows * CELL)
+        self._render_overlay()
 
-    # ----- map & grid ------------------------------------------------------ #
+    # ----- grid & floors --------------------------------------------------- #
 
-    def load_map(self, path):
+    def grid(self, z=None):
+        z = self.floor if z is None else z
+        if z not in self.collision:
+            self.collision[z] = np.zeros((self.rows, self.cols), dtype=np.uint8)
+        return self.collision[z]
+
+    def resize_grid(self, cols, rows):
+        for z, grid in list(self.collision.items()):
+            resized = np.zeros((rows, cols), dtype=np.uint8)
+            h, w = min(rows, grid.shape[0]), min(cols, grid.shape[1])
+            resized[:h, :w] = grid[:h, :w]
+            self.collision[z] = resized
+        self.cols, self.rows = cols, rows
+        self._scene.setSceneRect(0, 0, cols * CELL, rows * CELL)
+        self.waypoints = [w for w in self.waypoints if self._in_bounds(w[0], w[1])]
+        for key in [k for k in self.spawns if not self._in_bounds(k[0], k[1])]:
+            del self.spawns[key]
+        self.refresh()
+
+    def set_floor(self, z):
+        self.floor = int(z)
+        self.refresh()
+
+    def refresh(self):
+        self._render_overlay()
+        self._redraw_spawns()
+        self._redraw_waypoints()
+        self.scenario_changed.emit()
+
+    def load_map(self, path, cell_px, parser=None):
+        """Show the image as background; with a parser, replace this floor's collision with the parsed grid."""
         if self._map_item is not None:
             self._scene.removeItem(self._map_item)
             self._map_item = None
+        self.map_path = None
         pixmap = QPixmap(path) if path else QPixmap()
         if pixmap.isNull():
-            self.map_path = None
-            self.cols, self.rows = DEFAULT_GRID
-        else:
-            self.map_path = path
-            self._map_item = QGraphicsPixmapItem(pixmap)
-            self._map_item.setZValue(-10)
-            self._scene.addItem(self._map_item)
-            self.cols = max(4, pixmap.width() // CELL)
-            self.rows = max(4, pixmap.height() // CELL)
-        self._scene.setSceneRect(0, 0, self.cols * CELL, self.rows * CELL)
-        self._drop_out_of_bounds()
+            return None
+        self.map_path = path
+        self.map_cell_px = cell_px
+        self._map_item = QGraphicsPixmapItem(pixmap)
+        self._map_item.setZValue(-10)
+        self._map_item.setScale(CELL / cell_px)
+        self._scene.addItem(self._map_item)
+        self.resize_grid(max(1, pixmap.width() // cell_px), max(1, pixmap.height() // cell_px))
+        parsed = np.zeros((self.rows, self.cols), dtype=np.uint8)
+        if parser is not None:
+            parsed = parser.to_grid(load_rgba(path))
+            self.collision[self.floor] = parsed
+            self.refresh()
         self.centerOn(self._scene.sceneRect().center())
-        return self.map_path is not None
+        return parsed
 
-    def _drop_out_of_bounds(self):
-        inside = self._in_bounds
-        for cell in [c for c in self.obstacles if not inside(*c)]:
-            self._remove_obstacle(cell)
-        for cell in [c for c in self.spawns if not inside(*c)]:
-            self._remove_spawn(cell)
-        self.waypoints = [w for w in self.waypoints if inside(*w)]
-        self._redraw_waypoints()
+    def _render_overlay(self):
+        grid = self.grid()
+        rgba = np.zeros((self.rows, self.cols, 4), dtype=np.uint8)
+        rgba[grid > 0] = (150, 40, 40, 150)
+        self._overlay_buffer = np.ascontiguousarray(rgba)
+        image = QImage(self._overlay_buffer.data, self.cols, self.rows, self.cols * 4, QImage.Format_RGBA8888)
+        if self._overlay_item is None:
+            self._overlay_item = QGraphicsPixmapItem()
+            self._overlay_item.setZValue(1)
+            self._overlay_item.setScale(CELL)
+            self._overlay_item.setTransformationMode(Qt.FastTransformation)
+            self._scene.addItem(self._overlay_item)
+        self._overlay_item.setPixmap(QPixmap.fromImage(image))
 
     def drawBackground(self, painter, rect):
         painter.fillRect(rect, QColor("#1b1c1f"))
@@ -185,71 +238,50 @@ class GridCanvas(QGraphicsView):
         pos = self.mapToScene(view_pos)
         return int(pos.x() // CELL), int(pos.y() // CELL)
 
-    # ----- scenario editing ------------------------------------------------ #
+    # ----- editing --------------------------------------------------------- #
 
-    def _add_obstacle(self, cell):
-        if cell in self.obstacles:
-            return
-        self._remove_spawn(cell)
-        self.waypoints = [w for w in self.waypoints if w != cell]
-        self._redraw_waypoints()
-        item = QGraphicsRectItem(cell[0] * CELL, cell[1] * CELL, CELL, CELL)
-        item.setBrush(QBrush(QColor(20, 20, 20, 200)))
-        item.setPen(QPen(QColor("#795548"), 1))
-        item.setZValue(1)
-        self._scene.addItem(item)
-        self.obstacles.add(cell)
-        self._obstacle_items[cell] = item
-
-    def _remove_obstacle(self, cell):
-        if cell in self.obstacles:
-            self.obstacles.discard(cell)
-            self._scene.removeItem(self._obstacle_items.pop(cell))
-
-    def _set_spawn(self, cell, name):
-        self._remove_spawn(cell)
-        x, y = cell
-        item = QGraphicsRectItem(x * CELL + 4, y * CELL + 4, CELL - 8, CELL - 8)
-        item.setBrush(QBrush(QColor(213, 0, 0, 90)))
-        pen = QPen(QColor("#ff5252"), 2, Qt.DashLine)
-        item.setPen(pen)
-        item.setZValue(2)
-        label = QGraphicsSimpleTextItem(name[0], item)
-        label.setFont(QFont("Sans", 9, QFont.Bold))
-        label.setBrush(QBrush(QColor("#ffffff")))
-        label.setPos(x * CELL + 11, y * CELL + 7)
-        item.setToolTip(f"Spawn: {name}")
-        self._scene.addItem(item)
-        self.spawns[cell] = name
-        self._spawn_items[cell] = item
-
-    def _remove_spawn(self, cell):
-        if cell in self.spawns:
-            del self.spawns[cell]
-            self._scene.removeItem(self._spawn_items.pop(cell))
+    def _redraw_spawns(self):
+        for item in self._spawn_items.values():
+            self._scene.removeItem(item)
+        self._spawn_items = {}
+        for (x, y, z), name in self.spawns.items():
+            if z != self.floor:
+                continue
+            item = QGraphicsRectItem(x * CELL + 4, y * CELL + 4, CELL - 8, CELL - 8)
+            item.setBrush(QBrush(QColor(213, 0, 0, 90)))
+            item.setPen(QPen(QColor("#ff5252"), 2, Qt.DashLine))
+            item.setZValue(2)
+            label = QGraphicsSimpleTextItem(name[:2], item)
+            label.setFont(QFont("Sans", 8, QFont.Bold))
+            label.setBrush(QBrush(QColor("#ffffff")))
+            label.setPos(x * CELL + 8, y * CELL + 8)
+            item.setToolTip(f"Spawn: {name} (z={z})")
+            self._scene.addItem(item)
+            self._spawn_items[(x, y, z)] = item
 
     def _redraw_waypoints(self):
         for item in self._waypoint_items:
             self._scene.removeItem(item)
         self._waypoint_items = []
-        centers = [(x * CELL + CELL / 2, y * CELL + CELL / 2) for x, y in self.waypoints]
+        on_floor = [(i, x * CELL + CELL / 2, y * CELL + CELL / 2)
+                    for i, (x, y, z) in enumerate(self.waypoints) if z == self.floor]
         pen = QPen(QColor("#ffc400"), 2)
         pen.setCosmetic(True)
-        for (ax, ay), (bx, by) in zip(centers, centers[1:]):
+        for (ia, ax, ay), (ib, bx, by) in zip(on_floor, on_floor[1:]):
             line = QGraphicsLineItem(ax, ay, bx, by)
-            line.setPen(pen)
+            line.setPen(pen if ib == ia + 1 else QPen(QColor("#ffc400"), 1, Qt.DotLine))
             line.setZValue(3)
             self._scene.addItem(line)
             self._waypoint_items.append(line)
-        if len(centers) >= 3:
-            loop = QGraphicsLineItem(*centers[-1], *centers[0])
+        if len(on_floor) >= 3 and len(on_floor) == len(self.waypoints):
+            loop = QGraphicsLineItem(on_floor[-1][1], on_floor[-1][2], on_floor[0][1], on_floor[0][2])
             loop_pen = QPen(QColor("#ffc400"), 1.5, Qt.DashLine)
             loop_pen.setCosmetic(True)
             loop.setPen(loop_pen)
             loop.setZValue(3)
             self._scene.addItem(loop)
             self._waypoint_items.append(loop)
-        for i, (cx, cy) in enumerate(centers):
+        for i, cx, cy in on_floor:
             circle = QGraphicsEllipseItem(cx - 7, cy - 7, 14, 14)
             circle.setBrush(QBrush(QColor("#00e676" if i == 0 else "#00b0ff")))
             circle.setPen(QPen(QColor("#ffffff"), 1.5))
@@ -262,57 +294,63 @@ class GridCanvas(QGraphicsView):
             self._waypoint_items.append(circle)
 
     def _apply_tool(self, cell, dragging):
-        if not self._in_bounds(*cell):
+        x, y = cell
+        if not self._in_bounds(x, y):
             return
+        key = (x, y, self.floor)
+        grid = self.grid()
         if self.tool == TOOL_OBSTACLE:
-            self._add_obstacle(cell)
-        elif dragging:
+            if grid[y, x]:
+                return
+            grid[y, x] = 1
+            self.spawns.pop(key, None)
+            self.waypoints = [w for w in self.waypoints if w != key]
+            self.refresh()
             return
-        elif self.tool == TOOL_WAYPOINT:
-            if cell in self.obstacles or (self.waypoints and self.waypoints[-1] == cell):
+        if dragging or grid[y, x]:
+            return
+        if self.tool == TOOL_WAYPOINT:
+            if self.waypoints and self.waypoints[-1] == key:
                 return
-            self.waypoints.append(cell)
+            self.waypoints.append(key)
             self._redraw_waypoints()
-        elif self.tool == TOOL_MONSTER:
-            if cell in self.obstacles:
-                return
-            self._set_spawn(cell, self.monster_type)
+        elif self.tool == TOOL_MONSTER and self.monster_type:
+            self.spawns[key] = self.monster_type
+            self._redraw_spawns()
         self.scenario_changed.emit()
 
     def _erase(self, cell, dragging):
-        if not self._in_bounds(*cell):
+        x, y = cell
+        if not self._in_bounds(x, y):
             return
-        had_content = cell in self.obstacles or cell in self.spawns or cell in self.waypoints
-        self._remove_obstacle(cell)
-        self._remove_spawn(cell)
-        if cell in self.waypoints:
-            self.waypoints = [w for w in self.waypoints if w != cell]
-            self._redraw_waypoints()
+        key = (x, y, self.floor)
+        grid = self.grid()
+        had_content = bool(grid[y, x]) or key in self.spawns or key in self.waypoints
+        grid[y, x] = 0
+        self.spawns.pop(key, None)
+        if key in self.waypoints:
+            self.waypoints = [w for w in self.waypoints if w != key]
         elif not had_content and not dragging and self.tool == TOOL_WAYPOINT and self.waypoints:
             self.waypoints.pop()
-            self._redraw_waypoints()
-        self.scenario_changed.emit()
+        if had_content or not dragging:
+            self.refresh()
 
-    def clear_scenario(self):
-        for cell in list(self.obstacles):
-            self._remove_obstacle(cell)
-        for cell in list(self.spawns):
-            self._remove_spawn(cell)
-        self.waypoints = []
-        self._redraw_waypoints()
-        self.scenario_changed.emit()
+    def clear_floor(self):
+        self.collision[self.floor] = np.zeros((self.rows, self.cols), dtype=np.uint8)
+        self.spawns = {k: v for k, v in self.spawns.items() if k[2] != self.floor}
+        self.waypoints = [w for w in self.waypoints if w[2] != self.floor]
+        self.refresh()
 
-    def apply_scenario(self, obstacles, waypoints, spawns):
-        self.clear_scenario()
-        for x, y in obstacles:
-            if self._in_bounds(x, y):
-                self._add_obstacle((x, y))
-        for x, y, name in spawns:
-            if self._in_bounds(x, y) and name in MONSTER_TEMPLATES:
-                self._set_spawn((x, y), name)
-        self.waypoints = [(x, y) for x, y in waypoints if self._in_bounds(x, y)]
-        self._redraw_waypoints()
-        self.scenario_changed.emit()
+    def collision_rows(self):
+        return {str(z): grid_to_rows(g) for z, g in sorted(self.collision.items()) if g.any()}
+
+    def apply_config(self, config):
+        self.cols, self.rows = config.cols, config.rows
+        self._scene.setSceneRect(0, 0, self.cols * CELL, self.rows * CELL)
+        self.collision = {int(z): config.collision_grid(int(z)) for z in config.collision}
+        self.waypoints = [tuple(int(v) for v in w[:3]) for w in config.waypoints]
+        self.spawns = {(int(x), int(y), int(z)): name for x, y, z, name in config.spawns}
+        self.refresh()
 
     # ----- live entities --------------------------------------------------- #
 
@@ -326,18 +364,18 @@ class GridCanvas(QGraphicsView):
             self._druid_item = self._make_entity(QColor("#00c853"), "Druid", 22, mana_bar=True)
         if len(self._monster_items) != len(env.monsters):
             self._clear_monsters()
-            self._monster_items = [self._make_entity(QColor("#d50000"), m.name, 15)
-                                   for m in env.monsters]
+            self._monster_items = [self._make_entity(QColor("#d50000"), m.name, 15) for m in env.monsters]
 
         druid = env.druid
-        span = ATTACK_RANGE * 2 + 1
-        self._range_item.setRect((druid.x - ATTACK_RANGE) * CELL, (druid.y - ATTACK_RANGE) * CELL,
+        span = STRIKE_RANGE * 2 + 1
+        self._range_item.setRect((druid.x - STRIKE_RANGE) * CELL, (druid.y - STRIKE_RANGE) * CELL,
                                  span * CELL, span * CELL)
-        self._update_entity(self._druid_item, druid.x, druid.y, druid.hp / druid.max_hp,
-                            druid.mana / druid.max_mana, druid.utamo_active, druid.alive)
+        self._range_item.setVisible(druid.z == self.floor)
+        self._update_entity(self._druid_item, druid.x, druid.y, druid.hp_ratio, druid.mana_ratio,
+                            druid.utamo_active, druid.alive and druid.z == self.floor)
         for monster, item in zip(env.monsters, self._monster_items):
-            self._update_entity(item, monster.x, monster.y, monster.hp / monster.max_hp,
-                                None, False, monster.alive)
+            self._update_entity(item, monster.x, monster.y, monster.hp_ratio, None, False,
+                                monster.alive and monster.z == self.floor)
 
     def _make_entity(self, color, label, z, mana_bar=False):
         r = CELL / 2 - 4
@@ -475,7 +513,7 @@ class TrainingWorker(QThread):
                          on_progress=self.progress.emit,
                          should_stop=lambda: self._stop_requested,
                          progress_every=0.25)
-        except Exception as exc:  # surfaced in the GUI log instead of killing the thread silently
+        except Exception as exc:  # surfaced in the GUI log instead of dying silently
             self.failed.emit(f"{type(exc).__name__}: {exc}")
 
 
@@ -559,9 +597,9 @@ QWidget { background-color: #1e1f22; color: #dcdcdc; font-size: 10pt; }
 QGroupBox { border: 1px solid #3a3d42; border-radius: 6px; margin-top: 14px; padding: 8px;
             font-weight: bold; }
 QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }
-QSpinBox, QComboBox { background-color: #2b2d31; border: 1px solid #44474d; border-radius: 4px;
-                      padding: 3px 6px; color: #ffffff; }
-QSpinBox:disabled, QComboBox:disabled { color: #777; }
+QSpinBox, QDoubleSpinBox, QComboBox { background-color: #2b2d31; border: 1px solid #44474d;
+                                      border-radius: 4px; padding: 3px 6px; color: #ffffff; }
+QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled { color: #777; }
 QPushButton { background-color: #2f3237; border: 1px solid #4a4e55; border-radius: 5px;
               padding: 6px 10px; color: #ffffff; font-weight: bold; }
 QPushButton:hover { background-color: #3a3e44; }
@@ -591,14 +629,17 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Cyfrowy Bliźniak - Trening agenta RL (Druid)")
-        self.resize(1560, 940)
+        self.resize(1580, 960)
 
+        self.monster_db = MonsterDatabase.load()
+        self.monsters_file = None
         self.agent = DQNAgent()
         self.env = None
         self.obs = None
         self.worker = None
         self.pending_action = None
         self.manual_running = False
+        self.visual_clock_ms = 0.0
 
         self.visual_timer = QTimer(self)
         self.visual_timer.setTimerType(Qt.PreciseTimer)
@@ -607,13 +648,15 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._bind_keys()
+        self._populate_monsters()
         self._update_preview()
         self._update_model_label()
         self._refresh_controls()
 
-        if self.canvas.map_path:
-            self.log("system", f"Wczytano mapę {os.path.basename(MAP_FILE)} "
-                               f"({self.canvas.cols}x{self.canvas.rows} pól).")
+        self.log("system", f"Baza potworów: {len(self.monster_db)} pozycji "
+                           f"({os.path.basename(self.monster_db.source)}).")
+        if os.path.isfile(MAP_FILE):
+            self.load_map_file(MAP_FILE)
         else:
             self.log("system", f"Brak map.png - pusta siatka {self.canvas.cols}x{self.canvas.rows} pól.")
         self.log("system", "Narysuj trasę, przeszkody i spawny potworów, potem wybierz tryb pracy.")
@@ -631,7 +674,7 @@ class MainWindow(QMainWindow):
         self.canvas.edit_blocked.connect(
             lambda *_: self.statusBar().showMessage("Edycja mapy zablokowana podczas symulacji/treningu.", 3000))
         self.canvas.cell_hovered.connect(
-            lambda x, y: self.cell_label.setText(f"Pole: ({x}, {y})"))
+            lambda x, y: self.cell_label.setText(f"Pole: ({x}, {y}, {self.canvas.floor})"))
         left_layout.addWidget(self.canvas, 1)
         hint = QLabel("LPM: użyj narzędzia   |   PPM: wymaż pole (z narzędziem Trasa: usuń ostatni punkt)   |   "
                       "ŚPM: przesuwanie   |   Kółko: zoom")
@@ -656,12 +699,12 @@ class MainWindow(QMainWindow):
         right_split = QSplitter(Qt.Vertical)
         right_split.addWidget(scroll)
         right_split.addWidget(self._build_log_group())
-        right_split.setSizes([680, 240])
-        right_split.setMinimumWidth(560)
-        right_split.setMaximumWidth(720)
+        right_split.setSizes([700, 240])
+        right_split.setMinimumWidth(580)
+        right_split.setMaximumWidth(740)
         splitter.addWidget(right_split)
         splitter.setStretchFactor(0, 1)
-        splitter.setSizes([980, 580])
+        splitter.setSizes([980, 600])
         self.setCentralWidget(splitter)
 
         self.cell_label = QLabel("Pole: -")
@@ -672,28 +715,31 @@ class MainWindow(QMainWindow):
 
     def _build_character_group(self):
         group = QGroupBox("Postać - Druid")
-        form = QFormLayout(group)
+        grid = QGridLayout(group)
         self.level_input = self._spin(8, 2000, 100)
         self.magic_input = self._spin(0, 150, 60)
+        self.armor_input = self._spin(0, 200, 30)
         self.potions_input = self._spin(0, 5000, 100)
-        self.max_steps_input = self._spin(50, 10000, 600)
-        self.level_input.valueChanged.connect(self._update_preview)
-        self.magic_input.valueChanged.connect(self._update_preview)
-        self.utamo_checkbox = QCheckBox("Utamo Vita (Mana Shield, auto)")
+        self.max_steps_input = self._spin(50, 100_000, 600)
+        for spin in (self.level_input, self.magic_input):
+            spin.valueChanged.connect(self._update_preview)
+        self.utamo_checkbox = QCheckBox("Utamo Vita (auto)")
         self.utamo_checkbox.setChecked(True)
         self.preview_label = QLabel()
         self.preview_label.setStyleSheet("color: #9ccc65;")
         self.preview_label.setWordWrap(True)
-        form.addRow("Poziom:", self.level_input)
-        form.addRow("Poziom magii:", self.magic_input)
-        form.addRow("Great Mana Potion:", self.potions_input)
-        form.addRow("Limit kroków epizodu:", self.max_steps_input)
-        form.addRow("", self.utamo_checkbox)
-        form.addRow("", self.preview_label)
+        fields = [("Poziom:", self.level_input), ("Poziom magii:", self.magic_input),
+                  ("Pancerz (eq):", self.armor_input), ("Great Mana Potion:", self.potions_input),
+                  ("Limit decyzji:", self.max_steps_input), ("", self.utamo_checkbox)]
+        for i, (text, widget) in enumerate(fields):
+            row, col = divmod(i, 2)
+            grid.addWidget(QLabel(text), row, col * 2)
+            grid.addWidget(widget, row, col * 2 + 1)
+        grid.addWidget(self.preview_label, 3, 0, 1, 4)
         return group
 
     def _build_editor_group(self):
-        group = QGroupBox("Edycja mapy")
+        group = QGroupBox("Mapa, kolizje i potwory")
         layout = QVBoxLayout(group)
 
         tools = QHBoxLayout()
@@ -706,39 +752,59 @@ class MainWindow(QMainWindow):
             radio.setChecked(i == 0)
             self.tool_group.addButton(radio)
             tools.addWidget(radio)
-        self.tool_group.buttonClicked.connect(
-            lambda b, *_: setattr(self.canvas, "tool", b.property("tool")))
+        self.tool_group.buttonClicked.connect(lambda b, *_: setattr(self.canvas, "tool", b.property("tool")))
         layout.addLayout(tools)
 
-        form = QFormLayout()
+        grid = QGridLayout()
         self.monster_combo = QComboBox()
-        for name, t in MONSTER_TEMPLATES.items():
-            self.monster_combo.addItem(name, name)
-            self.monster_combo.setItemData(
-                self.monster_combo.count() - 1,
-                f"HP {t['max_hp']}, obrażenia {t['damage_range'][0]}-{t['damage_range'][1]}, "
-                f"prędkość {t['speed']}, exp {t['experience']}", Qt.ToolTipRole)
         self.monster_combo.currentIndexChanged.connect(
             lambda *_: setattr(self.canvas, "monster_type", self.monster_combo.currentData()))
-        self.random_monsters_input = self._spin(1, 30, 3)
-        form.addRow("Typ potwora:", self.monster_combo)
-        form.addRow("Losowe potwory:", self.random_monsters_input)
+        self.random_monsters_input = self._spin(0, 50, 3)
         self.random_monsters_input.setToolTip("Używane tylko, gdy na mapie nie ma spawnów")
-        layout.addLayout(form)
+        self.floor_input = self._spin(0, 15, GROUND_FLOOR)
+        self.floor_input.setToolTip("Piętro Z (Tibia: 7 = poziom gruntu)")
+        self.floor_input.valueChanged.connect(lambda z: self.canvas.set_floor(z))
+        self.cell_px_input = self._spin(1, 256, CELL)
+        self.cell_px_input.setToolTip("Ile pikseli PNG przypada na jedno pole (1 dla minimapy Tibii)")
+        self.tolerance_input = self._spin(0, 255, 40)
+        self.tolerance_input.setToolTip("Maks. różnica na kanał RGB od #000000 / #0000FF")
+        self.fraction_input = self._spin(1, 100, 50)
+        self.fraction_input.setSuffix(" %")
+        self.diagonal_input = QDoubleSpinBox()
+        self.diagonal_input.setRange(1.0, 3.0)
+        self.diagonal_input.setSingleStep(0.1)
+        self.diagonal_input.setValue(DEFAULT_DIAGONAL_MULTIPLIER)
+        self.diagonal_input.valueChanged.connect(self._update_preview)
+        self.ground_speed_input = self._spin(50, 500, DEFAULT_GROUND_SPEED)
+        self.ground_speed_input.setToolTip("Prędkość podłoża (trawa ≈ 150)")
+        self.ground_speed_input.valueChanged.connect(self._update_preview)
+        fields = [("Potwór:", self.monster_combo), ("Losowe potwory:", self.random_monsters_input),
+                  ("Piętro (Z):", self.floor_input), ("Piksele na pole:", self.cell_px_input),
+                  ("Tolerancja koloru:", self.tolerance_input), ("Próg zajętości:", self.fraction_input),
+                  ("Mnożnik ukosu:", self.diagonal_input), ("Prędkość podłoża:", self.ground_speed_input)]
+        for i, (text, widget) in enumerate(fields):
+            row, col = divmod(i, 2)
+            grid.addWidget(QLabel(text), row, col * 2)
+            grid.addWidget(widget, row, col * 2 + 1)
+        layout.addLayout(grid)
 
-        row = QGridLayout()
-        self.clear_map_button = QPushButton("Wyczyść mapę")
-        self.clear_map_button.clicked.connect(lambda *_: self.canvas.clear_scenario())
+        buttons = QGridLayout()
+        self.load_map_button = QPushButton("Wczytaj mapę PNG…")
+        self.load_map_button.clicked.connect(self.load_map_dialog)
+        self.reparse_button = QPushButton("Parsuj kolizje ponownie")
+        self.reparse_button.clicked.connect(self.reparse_map)
+        self.clear_map_button = QPushButton("Wyczyść piętro")
+        self.clear_map_button.clicked.connect(lambda *_: self.canvas.clear_floor())
+        self.load_db_button = QPushButton("Baza potworów (JSON)…")
+        self.load_db_button.clicked.connect(self.load_monster_db)
         self.save_scenario_button = QPushButton("Zapisz scenariusz")
         self.save_scenario_button.clicked.connect(self.save_scenario)
         self.load_scenario_button = QPushButton("Wczytaj scenariusz")
         self.load_scenario_button.clicked.connect(self.load_scenario)
-        self.load_map_button = QPushButton("Wczytaj mapę…")
-        self.load_map_button.clicked.connect(self.load_map_dialog)
-        for i, button in enumerate((self.clear_map_button, self.load_map_button,
-                                    self.save_scenario_button, self.load_scenario_button)):
-            row.addWidget(button, i // 2, i % 2)
-        layout.addLayout(row)
+        for i, button in enumerate((self.load_map_button, self.reparse_button, self.clear_map_button,
+                                    self.load_db_button, self.save_scenario_button, self.load_scenario_button)):
+            buttons.addWidget(button, i // 2, i % 2)
+        layout.addLayout(buttons)
         return group
 
     def _build_mode_group(self):
@@ -766,23 +832,32 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 4, 0, 0)
-        self.agent_control_checkbox = QCheckBox("Steruje agent (bieżąca polityka, zachłannie)")
-        layout.addWidget(self.agent_control_checkbox)
-        keys = QLabel("Klawisze: W/A/S/D lub strzałki - ruch, 1 - atak, 2 - leczenie, 3 - mikstura many")
+        row = QHBoxLayout()
+        self.agent_control_checkbox = QCheckBox("Steruje agent (polityka)")
+        self.speed_combo = QComboBox()
+        for label, factor in (("x0.5", 0.5), ("x1 (czas rzeczywisty)", 1.0), ("x2", 2.0), ("x4", 4.0), ("x10", 10.0)):
+            self.speed_combo.addItem(label, factor)
+        self.speed_combo.setCurrentIndex(1)
+        row.addWidget(self.agent_control_checkbox)
+        row.addWidget(QLabel("Prędkość:"))
+        row.addWidget(self.speed_combo)
+        layout.addLayout(row)
+        keys = QLabel("Klawisze: W/A/S/D lub strzałki - ruch, Q/E/Z/C - ukosy, 1 - Exori Frigo, "
+                      "2 - Exori Tera, 3 - Exura Gran, 4 - mikstura many")
         keys.setObjectName("hint")
         keys.setWordWrap(True)
         layout.addWidget(keys)
 
-        row = QHBoxLayout()
+        buttons = QHBoxLayout()
         self.manual_start_button = QPushButton("▶ Start")
         self.manual_start_button.setObjectName("primary")
         self.manual_start_button.clicked.connect(self.toggle_manual)
         self.manual_reset_button = QPushButton("⟲ Reset epizodu")
         self.manual_reset_button.setObjectName("danger")
         self.manual_reset_button.clicked.connect(lambda *_: self.reset_manual())
-        row.addWidget(self.manual_start_button)
-        row.addWidget(self.manual_reset_button)
-        layout.addLayout(row)
+        buttons.addWidget(self.manual_start_button)
+        buttons.addWidget(self.manual_reset_button)
+        layout.addLayout(buttons)
 
         bars = QFormLayout()
         self.hp_bar = QProgressBar()
@@ -826,8 +901,8 @@ class MainWindow(QMainWindow):
         self.train_values = self._value_grid(layout, [
             ("episode", "Epizod:"), ("avg_reward", "Śr. nagroda (100):"),
             ("avg_kills", "Śr. zabicia (100):"), ("death_rate", "Zgony (100):"),
-            ("epsilon", "Epsilon:"), ("speed", "Kroki/s:"),
-            ("loss", "Strata (Huber):"), ("steps", "Kroki łącznie:"),
+            ("epsilon", "Epsilon:"), ("speed", "Decyzje/s:"),
+            ("loss", "Strata (Huber):"), ("steps", "Decyzje łącznie:"),
         ])
         self.reward_plot = RewardPlot()
         layout.addWidget(self.reward_plot)
@@ -894,7 +969,10 @@ class MainWindow(QMainWindow):
             Qt.Key_S: ACTION_DOWN, Qt.Key_Down: ACTION_DOWN,
             Qt.Key_A: ACTION_LEFT, Qt.Key_Left: ACTION_LEFT,
             Qt.Key_D: ACTION_RIGHT, Qt.Key_Right: ACTION_RIGHT,
-            Qt.Key_1: ACTION_ATTACK, Qt.Key_2: ACTION_HEAL, Qt.Key_3: ACTION_MANA_POTION,
+            Qt.Key_Q: ACTION_UP_LEFT, Qt.Key_E: ACTION_UP_RIGHT,
+            Qt.Key_Z: ACTION_DOWN_LEFT, Qt.Key_C: ACTION_DOWN_RIGHT,
+            Qt.Key_1: ACTION_EXORI_FRIGO, Qt.Key_2: ACTION_EXORI_TERA,
+            Qt.Key_3: ACTION_HEAL, Qt.Key_4: ACTION_MANA_POTION,
         }
         QApplication.instance().installEventFilter(self)
 
@@ -905,6 +983,21 @@ class MainWindow(QMainWindow):
             self.pending_action = self.key_actions[event.key()]
             return True
         return super().eventFilter(obj, event)
+
+    def _populate_monsters(self):
+        current = self.monster_combo.currentData()
+        self.monster_combo.blockSignals(True)
+        self.monster_combo.clear()
+        for name in self.monster_db.names():
+            self.monster_combo.addItem(name, name)
+            self.monster_combo.setItemData(self.monster_combo.count() - 1,
+                                           self.monster_db.get(name).describe_pl(), Qt.ToolTipRole)
+        index = self.monster_combo.findData(current)
+        if index < 0:
+            index = max(0, self.monster_combo.findData("Giant Spider"))
+        self.monster_combo.setCurrentIndex(index)
+        self.monster_combo.blockSignals(False)
+        self.canvas.monster_type = self.monster_combo.currentData()
 
     # ----- state ----------------------------------------------------------- #
 
@@ -919,10 +1012,14 @@ class MainWindow(QMainWindow):
         editable = not busy and self.env is None
 
         self.canvas.editing_enabled = editable
-        for widget in (self.level_input, self.magic_input, self.potions_input,
+        for widget in (self.level_input, self.magic_input, self.armor_input, self.potions_input,
                        self.max_steps_input, self.utamo_checkbox, self.random_monsters_input,
-                       self.clear_map_button, self.load_scenario_button, self.load_map_button):
+                       self.cell_px_input, self.tolerance_input, self.fraction_input,
+                       self.diagonal_input, self.ground_speed_input,
+                       self.load_map_button, self.reparse_button, self.clear_map_button,
+                       self.load_db_button, self.load_scenario_button):
             widget.setEnabled(editable)
+        self.floor_input.setEnabled(not training)
         self.manual_radio.setEnabled(not busy)
         self.training_radio.setEnabled(not busy)
 
@@ -950,14 +1047,19 @@ class MainWindow(QMainWindow):
             rows=canvas.rows,
             level=self.level_input.value(),
             magic_level=self.magic_input.value(),
+            armor=self.armor_input.value(),
             use_utamo=self.utamo_checkbox.isChecked(),
             mana_potions=self.potions_input.value(),
-            obstacles=[list(c) for c in sorted(canvas.obstacles)],
+            collision=canvas.collision_rows(),
             waypoints=[list(w) for w in canvas.waypoints],
-            spawns=[[x, y, name] for (x, y), name in sorted(canvas.spawns.items())],
+            spawns=[[x, y, z, name] for (x, y, z), name in sorted(canvas.spawns.items())],
+            floor=canvas.floor,
             random_monster_count=self.random_monsters_input.value(),
             random_monster_type=self.monster_combo.currentData(),
             max_steps=self.max_steps_input.value(),
+            ground_speed=self.ground_speed_input.value(),
+            diagonal_multiplier=self.diagonal_input.value(),
+            monsters_file=self.monsters_file,
         )
 
     # ----- manual / visual mode -------------------------------------------- #
@@ -968,25 +1070,38 @@ class MainWindow(QMainWindow):
             self.manual_running = False
             self.log("system", "Wstrzymano.")
         else:
-            if self.env is None:
-                self._new_manual_episode()
+            if self.env is None and not self._new_manual_episode():
+                return
             self.manual_running = True
             self.visual_timer.start()
             who = "agent" if self.agent_control_checkbox.isChecked() else "gracz (klawiatura)"
-            self.log("system", f"Symulacja działa ({VISUAL_TICK_MS} ms/tick), steruje: {who}.")
+            self.log("system", f"Symulacja w czasie rzeczywistym ({self.speed_combo.currentText()}), "
+                               f"steruje: {who}.")
         self._refresh_controls()
 
     def _new_manual_episode(self):
         config = self.build_config()
-        self.env = DruidHuntEnv(config, record_events=True)
-        self.obs, info = self.env.reset()
+        if not self.agent_control_checkbox.isChecked():
+            # Keyboard play: idle 100 ms waits are decisions too, so the training limit would end it early
+            config.max_steps = 10 ** 9
+        try:
+            self.env = DruidHuntEnv(config, record_events=True, monster_db=self.monster_db)
+            self.obs, info = self.env.reset()
+        except ValueError as exc:
+            self.env = None
+            QMessageBox.warning(self, "Błąd scenariusza", str(exc))
+            return False
         druid = self.env.druid
+        self.visual_clock_ms = 0.0
+        if druid.z != self.canvas.floor:
+            self.floor_input.setValue(druid.z)
         self.log("system", "=" * 44)
-        self.log("system", f"Nowy epizod: Druid lvl {druid.level}, ML {druid.magic_level}, "
+        self.log("system", f"Nowy epizod: Druid lvl {druid.level}, ML {druid.magic_level}, pancerz {druid.armor}, "
                            f"HP {druid.max_hp}, Mana {druid.max_mana}, potwory: {len(self.env.monsters)}.")
         self._log_env_events()
         self.canvas.sync_entities(self.env)
         self._update_manual_status(info, 0.0, None)
+        return True
 
     def reset_manual(self, log=True):
         self.visual_timer.stop()
@@ -1001,31 +1116,39 @@ class MainWindow(QMainWindow):
         self._refresh_controls()
 
     def on_visual_tick(self):
-        env = self.env
-        if env is None:
+        """Advance real time; run decisions until the simulation clock catches up."""
+        if self.env is None:
             return
-        if self.agent_control_checkbox.isChecked():
-            action = self.agent.act(self.obs, greedy=True)
-        else:
-            action, self.pending_action = self.pending_action, None
-        if action is None:
-            self.obs, reward, terminated, truncated, info = env.idle_step()
-        else:
-            self.obs, reward, terminated, truncated, info = env.step(action)
-        self._log_env_events()
-        self.canvas.sync_entities(env)
-        self._update_manual_status(info, reward, action)
-
-        if terminated or truncated:
-            self.log("system", f"Koniec epizodu: nagroda {info['episode_reward']:.1f}, "
-                               f"zabite {info['kills']}, kroki {info['steps']}.")
+        self.visual_clock_ms += VISUAL_TICK_MS * self.speed_combo.currentData()
+        for _ in range(MAX_DECISIONS_PER_FRAME):
+            env = self.env
+            if env is None or env.time_ms >= self.visual_clock_ms:
+                break
             if self.agent_control_checkbox.isChecked():
-                self._new_manual_episode()
+                action = self.agent.act(self.obs, greedy=True)
             else:
-                self.visual_timer.stop()
-                self.manual_running = False
-                self.env = None
-                self._refresh_controls()
+                action, self.pending_action = self.pending_action, None
+                action = ACTION_WAIT if action is None else action
+            self.obs, reward, terminated, truncated, info = env.step(action)
+            self._log_env_events()
+            self._update_manual_status(info, reward, action)
+            if terminated or truncated:
+                self._end_manual_episode(info)
+                break
+        if self.env is not None:
+            self.canvas.sync_entities(self.env)
+
+    def _end_manual_episode(self, info):
+        self.canvas.sync_entities(self.env)
+        self.log("system", f"Koniec epizodu: nagroda {info['episode_reward']:.1f}, zabite {info['kills']}, "
+                           f"decyzje {info['steps']}, czas {format_game_time(info['time_ms'])}.")
+        if self.agent_control_checkbox.isChecked():
+            self._new_manual_episode()
+        else:
+            self.visual_timer.stop()
+            self.manual_running = False
+            self.env = None
+            self._refresh_controls()
 
     def _update_manual_status(self, info, reward, action):
         env = self.env
@@ -1033,24 +1156,30 @@ class MainWindow(QMainWindow):
         self._set_bar(self.hp_bar, druid.hp, druid.max_hp)
         self._set_bar(self.mana_bar, druid.mana, druid.max_mana)
         v = self.manual_values
-        v["time"].setText(format_game_time(info["steps"]))
+        v["time"].setText(format_game_time(info["time_ms"]))
         v["reward"].setText(f"{info['episode_reward']:.1f}")
         v["kills"].setText(f"{info['kills']} / {len(env.monsters)}")
         v["last_reward"].setText(f"{reward:+.1f}")
-        v["utamo"].setText(f"Aktywne ({druid.utamo_ticks * TICK_SECONDS:.0f} s)"
+        v["utamo"].setText(f"Aktywne ({druid.utamo_remaining_ms(env.time_ms) / 1000:.0f} s)"
                            if druid.utamo_active else "Nieaktywne")
-        v["action"].setText(ACTION_LABELS_PL[action] if action is not None else "Czekanie")
+        if action is not None and action != ACTION_WAIT:
+            v["action"].setText(ACTION_LABELS_PL[action])
 
     def _log_env_events(self):
         if self.env is None:
             return
         for kind, message in self.env.events:
-            self.log(kind, message, steps=self.env.steps)
+            self.log(kind, message, time_ms=self.env.time_ms)
 
     # ----- training mode --------------------------------------------------- #
 
     def start_training(self):
         config = self.build_config()
+        try:
+            DruidHuntEnv(config, monster_db=self.monster_db).reset()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Błąd scenariusza", str(exc))
+            return
         episodes = self.episodes_input.value()
         self.reward_plot.clear()
         self.train_progress.setRange(0, episodes)
@@ -1059,8 +1188,10 @@ class MainWindow(QMainWindow):
         self.worker.progress.connect(self._on_training_progress)
         self.worker.failed.connect(lambda msg: self.log("death", f"Błąd treningu: {msg}"))
         self.worker.finished.connect(self._on_training_finished)
+        blocked = sum(row.count("1") for rows in config.collision.values() for row in rows)
         self.log("train", f"Start treningu: {episodes} epizodów, siatka {config.cols}x{config.rows}, "
-                          f"przeszkody {len(config.obstacles)}, spawny {len(config.spawns) or 'losowe'}.")
+                          f"zablokowane pola {blocked}, spawny {len(config.spawns) or 'losowe'}, "
+                          f"ukos x{config.diagonal_multiplier:.2f}.")
         self.worker.start()
         self._refresh_controls()
 
@@ -1086,7 +1217,7 @@ class MainWindow(QMainWindow):
 
     def _on_training_finished(self):
         self.log("train", f"Trening zakończony. Epizody łącznie: {self.agent.episodes_trained}, "
-                          f"kroki: {self.agent.total_steps}.")
+                          f"decyzje: {self.agent.total_steps}.")
         self.worker = None
         self._update_model_label()
         self._refresh_controls()
@@ -1099,8 +1230,7 @@ class MainWindow(QMainWindow):
                                               "Polityka numpy (*.npz)")
         if not path:
             return
-        config = self.build_config()
-        written = self.agent.export_policy(path, {"env_config": config.to_dict()})
+        written = self.agent.export_policy(path, {"env_config": self.build_config().to_dict()})
         self.log("system", "Wyeksportowano model: " + ", ".join(os.path.basename(p) for p in written))
         if not any(p.endswith(".pt") for p in written):
             self.log("info", "PyTorch nie jest zainstalowany - zapisano tylko format .npz.")
@@ -1127,10 +1257,56 @@ class MainWindow(QMainWindow):
         sizes = " → ".join(str(s) for s in self.agent.online.sizes)
         self.model_label.setText(
             f"Double DQN (numpy), warstwy: {sizes}\n"
-            f"Epizody: {self.agent.episodes_trained}   |   kroki: {self.agent.total_steps}   |   "
+            f"Epizody: {self.agent.episodes_trained}   |   decyzje: {self.agent.total_steps}   |   "
             f"epsilon: {self.agent.epsilon:.3f}")
 
-    # ----- scenario files -------------------------------------------------- #
+    # ----- map, database, scenario files ----------------------------------- #
+
+    def _parser(self):
+        tolerance = self.tolerance_input.value()
+        rules = (ColorRule("Pustka / ściana (#000000)", (0, 0, 0), tolerance),
+                 ColorRule("Woda (#0000FF)", (0, 0, 255), tolerance))
+        return MapParser(rules, cell_px=self.cell_px_input.value(),
+                         blocked_fraction=self.fraction_input.value() / 100.0)
+
+    def load_map_file(self, path):
+        try:
+            parsed = self.canvas.load_map(path, self.cell_px_input.value(), self._parser())
+        except (OSError, ValueError) as exc:
+            self.log("warn", f"Nie udało się sparsować mapy: {exc}")
+            return
+        if parsed is None:
+            self.log("warn", f"Nie udało się wczytać mapy: {os.path.basename(path)}")
+            return
+        self.log("system", f"Wczytano mapę {os.path.basename(path)}: siatka {self.canvas.cols}x{self.canvas.rows}, "
+                           f"zablokowane pola: {int(parsed.sum())} ({parsed.mean() * 100:.1f}%), "
+                           f"piętro {self.canvas.floor}.")
+
+    def load_map_dialog(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Wczytaj mapę", PROJECT_DIR,
+                                              "Obrazy (*.png *.jpg *.jpeg *.bmp)")
+        if path:
+            self.load_map_file(path)
+
+    def reparse_map(self):
+        if not self.canvas.map_path:
+            self.log("warn", "Brak wczytanej mapy do sparsowania.")
+            return
+        self.load_map_file(self.canvas.map_path)
+
+    def load_monster_db(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Baza potworów", os.path.dirname(self.monster_db.source),
+                                              "JSON (*.json)")
+        if not path:
+            return
+        try:
+            self.monster_db = MonsterDatabase.load(path)
+        except (OSError, ValueError, KeyError) as exc:
+            QMessageBox.critical(self, "Błąd", f"Niepoprawny plik potworów:\n{exc}")
+            return
+        self.monsters_file = path
+        self._populate_monsters()
+        self.log("system", f"Wczytano bazę potworów: {os.path.basename(path)} ({len(self.monster_db)} pozycji).")
 
     def save_scenario(self):
         path, _ = QFileDialog.getSaveFileName(self, "Zapisz scenariusz",
@@ -1139,6 +1315,7 @@ class MainWindow(QMainWindow):
             return
         data = self.build_config().to_dict()
         data["map_image"] = self.canvas.map_path
+        data["map_cell_px"] = self.canvas.map_cell_px
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(data, handle, ensure_ascii=False, indent=2)
         self.log("system", f"Zapisano scenariusz: {os.path.basename(path)}")
@@ -1151,43 +1328,48 @@ class MainWindow(QMainWindow):
             with open(path, encoding="utf-8") as handle:
                 data = json.load(handle)
             config = EnvConfig.from_dict(data)
-        except (OSError, ValueError, TypeError) as exc:
+            db = MonsterDatabase.load(config.monsters_file) if config.monsters_file else self.monster_db
+        except (OSError, ValueError, TypeError, KeyError) as exc:
             QMessageBox.critical(self, "Błąd", f"Nie udało się wczytać scenariusza:\n{exc}")
             return
+        self.monster_db, self.monsters_file = db, config.monsters_file
+        self._populate_monsters()
         map_image = data.get("map_image")
-        self.canvas.load_map(map_image if map_image and os.path.isfile(map_image) else None)
-        self.canvas.apply_scenario(config.obstacles, config.waypoints, config.spawns)
+        if map_image and os.path.isfile(map_image):
+            self.cell_px_input.setValue(int(data.get("map_cell_px", CELL)))
+            self.canvas.load_map(map_image, self.cell_px_input.value())
+        self.canvas.apply_config(config)
+        self.floor_input.setValue(config.floor)
         self.level_input.setValue(config.level)
         self.magic_input.setValue(config.magic_level)
+        self.armor_input.setValue(config.armor)
         self.potions_input.setValue(config.mana_potions)
         self.max_steps_input.setValue(config.max_steps)
         self.utamo_checkbox.setChecked(config.use_utamo)
         self.random_monsters_input.setValue(config.random_monster_count)
+        self.diagonal_input.setValue(config.diagonal_multiplier)
+        self.ground_speed_input.setValue(config.ground_speed)
         index = self.monster_combo.findData(config.random_monster_type)
         if index >= 0:
             self.monster_combo.setCurrentIndex(index)
         self.log("system", f"Wczytano scenariusz: {os.path.basename(path)}")
 
-    def load_map_dialog(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Wczytaj mapę", PROJECT_DIR,
-                                              "Obrazy (*.png *.jpg *.jpeg *.bmp)")
-        if path:
-            loaded = self.canvas.load_map(path)
-            self.log("system", f"Wczytano mapę: {os.path.basename(path)} ({self.canvas.cols}x{self.canvas.rows} pól)."
-                     if loaded else f"Nie udało się wczytać mapy: {os.path.basename(path)}")
-            self._on_scenario_changed()
-
     # ----- misc ------------------------------------------------------------ #
 
     def _on_scenario_changed(self):
         c = self.canvas
-        self.scenario_label.setText(f"Siatka {c.cols}x{c.rows}   |   trasa: {len(c.waypoints)}   |   "
-                                    f"spawny: {len(c.spawns)}   |   przeszkody: {len(c.obstacles)}")
+        self.scenario_label.setText(f"Siatka {c.cols}x{c.rows}   |   piętro {c.floor}   |   "
+                                    f"trasa: {len(c.waypoints)}   |   spawny: {len(c.spawns)}   |   "
+                                    f"kolizje (piętro): {int(c.grid().sum())}")
 
     def _update_preview(self):
-        druid = Druid(self.level_input.value(), self.magic_input.value(), 0)
-        self.preview_label.setText(f"Maks. HP: {druid.max_hp}   |   Maks. mana: {druid.max_mana}   |   "
-                                   f"Prędkość: {druid.speed}")
+        druid = Druid(self.level_input.value(), self.magic_input.value())
+        ground = self.ground_speed_input.value()
+        multiplier = self.diagonal_input.value()
+        straight = step_duration_ms(druid.speed, False, ground, multiplier)
+        diagonal = step_duration_ms(druid.speed, True, ground, multiplier)
+        self.preview_label.setText(f"Maks. HP: {druid.max_hp}  |  Maks. mana: {druid.max_mana}  |  "
+                                   f"Prędkość: {druid.speed}  |  Krok: {straight} ms, ukos: {diagonal} ms")
         if self.env is None:
             self._set_bar(self.hp_bar, druid.max_hp, druid.max_hp)
             self._set_bar(self.mana_bar, druid.max_mana, druid.max_mana)
@@ -1198,11 +1380,12 @@ class MainWindow(QMainWindow):
         bar.setValue(int(value))
         bar.setFormat(f"{int(value)} / {maximum}")
 
-    def log(self, kind, message, steps=None):
+    def log(self, kind, message, time_ms=None):
         color = LOG_COLORS.get(kind, LOG_COLORS["info"])
         weight = "bold" if kind in ("death", "kill") else "normal"
-        stamp = format_game_time(steps if steps is not None else (self.env.steps if self.env else 0))
-        self.event_log.append(f'<span style="color:#6d6d6d;">[{stamp}]</span> '
+        if time_ms is None:
+            time_ms = self.env.time_ms if self.env is not None else 0
+        self.event_log.append(f'<span style="color:#6d6d6d;">[{format_game_time(time_ms)}]</span> '
                               f'<span style="color:{color}; font-weight:{weight};">{html.escape(message)}</span>')
         bar = self.event_log.verticalScrollBar()
         bar.setValue(bar.maximum())

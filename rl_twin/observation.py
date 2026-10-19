@@ -1,30 +1,40 @@
 """
 Observation encoding shared by the training environment and external inference.
 
-This module depends only on numpy, so brainstem.py can import it (or copy it)
-and build the exact same feature vector from live game data that the policy
-saw during training.
+Depends only on numpy (plus the pure-Python physics helpers), so brainstem.py can
+import it and build the exact feature vector the policy saw during training.
 """
 
 from dataclasses import dataclass, field
 
 import numpy as np
 
-VIEW_RADIUS = 3          # local window: (2 * VIEW_RADIUS + 1) ** 2 cells per channel
-SIGHT_RANGE = 8          # cells; monsters further away are invisible to the agent
-ATTACK_RANGE = 4         # cells (Chebyshev) for Exori Frigo
-POTION_NORMALIZER = 100  # potions_left feature saturates at this count
+from .physics import VIEW_RANGE_X, VIEW_RANGE_Y, chebyshev
 
-ACTION_NAMES = ["up", "down", "left", "right", "attack", "heal", "mana_potion"]
-ACTION_LABELS_PL = ["Góra", "Dół", "Lewo", "Prawo", "Atak (Exori Frigo)",
-                    "Leczenie (Exura Gran)", "Mikstura many"]
+VIEW_RADIUS = 4           # local window: (2 * VIEW_RADIUS + 1) ** 2 cells per channel
+POTION_NORMALIZER = 100   # potions_left saturates at this count
+STEP_MS_NORMALIZER = 1000.0
+MODIFIER_NORMALIZER = 200.0
+
+ACTION_NAMES = [
+    "up", "down", "left", "right",
+    "up_left", "up_right", "down_left", "down_right",
+    "exori_frigo", "exori_tera", "heal", "mana_potion", "wait",
+]
+ACTION_LABELS_PL = [
+    "Góra", "Dół", "Lewo", "Prawo",
+    "Ukos ↖", "Ukos ↗", "Ukos ↙", "Ukos ↘",
+    "Exori Frigo (lód)", "Exori Tera (ziemia)", "Exura Gran", "Mikstura many", "Czekaj",
+]
 
 SCALAR_FEATURES = [
-    "player_x", "player_y",
+    "player_x", "player_y", "player_z",
     "hp_ratio", "mana_ratio", "utamo_active", "utamo_remaining",
-    "attack_cooldown", "heal_cooldown", "potion_cooldown", "potions_left",
-    "monster_visible", "monster_dx", "monster_dy", "monster_distance",
-    "monster_hp_ratio", "monster_attack_cooldown", "monster_in_attack_range", "monster_adjacent",
+    "cooldown_exori_frigo", "cooldown_exori_tera", "cooldown_heal", "cooldown_potion",
+    "potions_left", "player_step_ms",
+    "monster_visible", "monster_dx", "monster_dy", "monster_distance", "monster_hp_ratio",
+    "monster_attack_cooldown", "monster_in_spell_range", "monster_line_of_sight", "monster_adjacent",
+    "monster_ice_modifier", "monster_earth_modifier", "monster_step_ms",
     "aggro_count", "waypoint_dx", "waypoint_dy",
 ]
 _WINDOW = [(dx, dy) for dy in range(-VIEW_RADIUS, VIEW_RADIUS + 1)
@@ -39,77 +49,98 @@ OBS_SIZE = len(FEATURE_NAMES)
 class MonsterView:
     x: int
     y: int
+    z: int
     hp_ratio: float
     attack_cooldown_ratio: float
     aggro: bool
+    ice_modifier: int = 100        # damage taken percent
+    earth_modifier: int = 100
+    step_ms: int = 300             # orthogonal step duration
+    line_of_sight: bool = True
 
 
 @dataclass
 class GameSnapshot:
-    """Everything the policy needs to know about one tick of the game."""
+    """Everything the policy needs to know at one decision point."""
     cols: int
     rows: int
     player_x: int
     player_y: int
+    player_z: int
     hp_ratio: float
     mana_ratio: float
     utamo_active: bool
     utamo_remaining_ratio: float
-    attack_cooldown_ratio: float
-    heal_cooldown_ratio: float
-    potion_cooldown_ratio: float
+    cooldown_ratios: dict          # keys: exori_frigo, exori_tera, heal, potion -> 0..1
     potions_left: int
-    monsters: list = field(default_factory=list)        # list[MonsterView], alive only
-    blocked: set = field(default_factory=set)           # {(x, y)} static obstacles
-    next_waypoint: tuple = None                         # (x, y) or None
+    player_step_ms: int
+    spell_range: int
+    collision: np.ndarray = None   # (rows, cols) uint8 for the player's floor, 1 = blocked
+    monsters: list = field(default_factory=list)   # alive MonsterView, any floor
+    next_waypoint: tuple = None    # (x, y, z) or None
 
 
-def chebyshev(ax, ay, bx, by):
-    return max(abs(ax - bx), abs(ay - by))
+def _visible(snap, m):
+    return (m.z == snap.player_z
+            and abs(m.x - snap.player_x) <= VIEW_RANGE_X and abs(m.y - snap.player_y) <= VIEW_RANGE_Y)
 
 
 def encode_observation(snap):
-    """Convert a GameSnapshot into a float32 vector of length OBS_SIZE in [-1, 1]."""
+    """Convert a GameSnapshot into a float32 vector of length OBS_SIZE (values roughly in [-1, 1])."""
     obs = np.zeros(OBS_SIZE, dtype=np.float32)
     px, py = snap.player_x, snap.player_y
-
-    visible = [m for m in snap.monsters if chebyshev(px, py, m.x, m.y) <= SIGHT_RANGE]
+    visible = [m for m in snap.monsters if _visible(snap, m)]
     nearest = min(visible, key=lambda m: (chebyshev(px, py, m.x, m.y), m.hp_ratio), default=None)
+    cds = snap.cooldown_ratios
 
     obs[0] = px / max(1, snap.cols - 1)
     obs[1] = py / max(1, snap.rows - 1)
-    obs[2] = snap.hp_ratio
-    obs[3] = snap.mana_ratio
-    obs[4] = 1.0 if snap.utamo_active else 0.0
-    obs[5] = snap.utamo_remaining_ratio
-    obs[6] = snap.attack_cooldown_ratio
-    obs[7] = snap.heal_cooldown_ratio
-    obs[8] = snap.potion_cooldown_ratio
-    obs[9] = min(snap.potions_left, POTION_NORMALIZER) / POTION_NORMALIZER
+    obs[2] = snap.player_z / 15.0
+    obs[3] = snap.hp_ratio
+    obs[4] = snap.mana_ratio
+    obs[5] = 1.0 if snap.utamo_active else 0.0
+    obs[6] = snap.utamo_remaining_ratio
+    obs[7] = cds.get("exori_frigo", 0.0)
+    obs[8] = cds.get("exori_tera", 0.0)
+    obs[9] = cds.get("heal", 0.0)
+    obs[10] = cds.get("potion", 0.0)
+    obs[11] = min(snap.potions_left, POTION_NORMALIZER) / POTION_NORMALIZER
+    obs[12] = snap.player_step_ms / STEP_MS_NORMALIZER
     if nearest is not None:
         dist = chebyshev(px, py, nearest.x, nearest.y)
-        obs[10] = 1.0
-        obs[11] = np.clip((nearest.x - px) / SIGHT_RANGE, -1, 1)
-        obs[12] = np.clip((nearest.y - py) / SIGHT_RANGE, -1, 1)
-        obs[13] = dist / SIGHT_RANGE
-        obs[14] = nearest.hp_ratio
-        obs[15] = nearest.attack_cooldown_ratio
-        obs[16] = 1.0 if dist <= ATTACK_RANGE else 0.0
-        obs[17] = 1.0 if dist <= 1 else 0.0
-    obs[18] = min(sum(1 for m in snap.monsters if m.aggro), 5) / 5.0
-    if snap.next_waypoint is not None:
-        wx, wy = snap.next_waypoint
-        obs[19] = np.clip((wx - px) / SIGHT_RANGE, -1, 1)
-        obs[20] = np.clip((wy - py) / SIGHT_RANGE, -1, 1)
+        obs[13] = 1.0
+        obs[14] = (nearest.x - px) / VIEW_RANGE_X
+        obs[15] = (nearest.y - py) / VIEW_RANGE_Y
+        obs[16] = dist / VIEW_RANGE_X
+        obs[17] = nearest.hp_ratio
+        obs[18] = nearest.attack_cooldown_ratio
+        obs[19] = 1.0 if dist <= snap.spell_range else 0.0
+        obs[20] = 1.0 if nearest.line_of_sight else 0.0
+        obs[21] = 1.0 if dist <= 1 else 0.0
+        obs[22] = nearest.ice_modifier / MODIFIER_NORMALIZER
+        obs[23] = nearest.earth_modifier / MODIFIER_NORMALIZER
+        obs[24] = nearest.step_ms / STEP_MS_NORMALIZER
+    obs[25] = min(sum(1 for m in visible if m.aggro), 5) / 5.0
+    if snap.next_waypoint is not None and snap.next_waypoint[2] == snap.player_z:
+        obs[26] = np.clip((snap.next_waypoint[0] - px) / VIEW_RANGE_X, -1, 1)
+        obs[27] = np.clip((snap.next_waypoint[1] - py) / VIEW_RANGE_Y, -1, 1)
 
+    # Local window, out-of-bounds counts as blocked
+    r = VIEW_RADIUS
+    size = 2 * r + 1
+    blocked = np.ones((size, size), dtype=np.float32)
+    x0, x1 = max(0, px - r), min(snap.cols, px + r + 1)
+    y0, y1 = max(0, py - r), min(snap.rows, py + r + 1)
+    if snap.collision is not None and x0 < x1 and y0 < y1:
+        blocked[y0 - (py - r): y1 - (py - r), x0 - (px - r): x1 - (px - r)] = snap.collision[y0:y1, x0:x1]
+    elif x0 < x1 and y0 < y1:
+        blocked[y0 - (py - r): y1 - (py - r), x0 - (px - r): x1 - (px - r)] = 0.0
+    monsters = np.zeros((size, size), dtype=np.float32)
+    for m in visible:
+        wx, wy = m.x - px + r, m.y - py + r
+        if 0 <= wx < size and 0 <= wy < size:
+            monsters[wy, wx] = 1.0
     base = len(SCALAR_FEATURES)
-    window = len(_WINDOW)
-    monster_cells = {(m.x, m.y) for m in snap.monsters}
-    for i, (dx, dy) in enumerate(_WINDOW):
-        cx, cy = px + dx, py + dy
-        out_of_bounds = not (0 <= cx < snap.cols and 0 <= cy < snap.rows)
-        if out_of_bounds or (cx, cy) in snap.blocked:
-            obs[base + i] = 1.0
-        if (cx, cy) in monster_cells:
-            obs[base + window + i] = 1.0
+    obs[base: base + size * size] = blocked.ravel()
+    obs[base + size * size:] = monsters.ravel()
     return obs

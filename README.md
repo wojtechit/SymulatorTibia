@@ -37,50 +37,54 @@ Silnik (`Druid`, `Monster`, `HuntSimulation`) nie zależy od Qt – można go te
 
 ---
 
-# Cyfrowy bliźniak RL (`rl_twin/`)
-
-Środowisko treningowe dla agenta RL (Double DQN) + GUI do edycji scenariusza, testów ręcznych i treningu w tle.
+# Cyfrowy bliźniak RL (`rl_twin/`) — faza 2: mechanika Tibii
 
 ```bash
-python3 rl_twin_app.py                                   # GUI
-python3 -m rl_twin.trainer scenario.json --episodes 5000 --out druid_policy   # trening bez GUI (np. na serwerze)
-python3 brainstem_example.py druid_policy.npz            # test wyeksportowanej polityki
+python3 rl_twin_app.py                                                        # GUI
+python3 -m rl_twin.trainer scenario.json --episodes 5000 --out druid_policy   # trening bez GUI
+python3 brainstem_example.py druid_policy.npz                                 # test wyeksportowanej polityki
 ```
 
-## Struktura
+## Moduły
 
-| Plik | Rola | Zależności |
-|---|---|---|
-| `rl_twin/observation.py` | `GameSnapshot` → wektor obserwacji (119 cech) | numpy |
-| `rl_twin/env.py` | `DruidHuntEnv`: `reset()`, `step(action)`, Druid, Monster, nagrody | numpy |
-| `rl_twin/agent.py` | Double DQN (MLP, Adam, replay buffer), eksport/import | numpy (torch opcjonalnie) |
-| `rl_twin/trainer.py` | pętla treningowa (wspólna dla QThread i CLI) | numpy |
-| `rl_twin/gui.py` | PyQt5: mapa, tryby, QThread, wykres nagród | PyQt5 |
-| `brainstem_example.py` | wzorcowy loader modelu do `brainstem.py` | numpy |
+| Plik | Rola |
+|---|---|
+| `rl_twin/data/monsters.json` | baza potworów (HP, exp, prędkość, pancerz, melee, modyfikatory żywiołów) |
+| `rl_twin/monsters.py` | `MonsterDatabase` – ładowanie i walidacja JSON |
+| `rl_twin/combat.py` | żywioły, księga czarów (`SPELLBOOK`), pancerz, modyfikatory, cooldowny (czar + grupa) |
+| `rl_twin/physics.py` | czas kroku z prędkości (wzór Tibii), koszt ukosu, A*, linia wzroku, zasięg ekranu 15×11 |
+| `rl_twin/mapparser.py` | `MapParser`: PNG → siatka kolizji numpy |
+| `rl_twin/entities.py` | `Entity(x, y, z)`, `Druid`, `Monster` |
+| `rl_twin/env.py` | `DruidHuntEnv` (`reset`/`step`), zegar w ms, ticki serwera 50 ms |
+| `rl_twin/observation.py` | `GameSnapshot` → wektor 190 cech (wspólny z `brainstem.py`) |
+| `rl_twin/agent.py`, `trainer.py`, `gui.py` | Double DQN (numpy), pętla treningowa, GUI PyQt5 |
 
-## Środowisko
+## Mechanika
 
-- **Akcje (Discrete 7):** 0 góra, 1 dół, 2 lewo, 3 prawo, 4 atak (Exori Frigo, zasięg 4 pola), 5 leczenie (Exura Gran), 6 Great Mana Potion.
-- **Utamo Vita** jest utrzymywane automatycznie (checkbox), jego stan jest w obserwacji.
-- **Nagrody:** +100 zabicie, −5 za każde otrzymane trafienie, −1000 śmierć, −1 za krok, −0.5 za akcję niemożliwą (cooldown/brak many/brak celu/ściana), +2 za osiągnięcie punktu trasy. Wszystko w `RewardConfig`.
-- **Koniec epizodu:** śmierć lub wszystkie potwory martwe (`terminated`), limit kroków (`truncated`).
-- Potwory poruszają się z prędkością względną do Druida (`speed_monster / speed_druid` pola na tick), więc wolniejsze da się kitować.
+- **Czas:** każda decyzja agenta to jeden `step()`. Krok zużywa realny czas kroku postaci, inna akcja 100 ms. Świat (ruch i ataki potworów, regeneracja, Utamo) liczy się w tickach 50 ms.
+- **Prędkość → czas kroku:** `eff = 857.36·ln(speed + 261.29) − 4795.01`, `krok = ceil(1000·podłoże / eff / 50)·50 ms`. Ukos ×1.5 (konfigurowalne). Przykład: Druid lvl 100 – 250 ms / ukos 350 ms, Giant Spider – 300 / 450 ms.
+- **A\*:** 8 kierunków, koszt ukosu = mnożnik; potwory szukają ścieżki do pola obok gracza, omijając przeszkody i inne potwory.
+- **Obrażenia:** fizyczne → pancerz `random(armor/2, armor − (armor%2 + 1))` → modyfikator żywiołu (%) → Utamo Vita → HP. Pancerz działa tylko na obrażenia fizyczne (tak jak w Tibii); czary żywiołów omijają go i liczą się wyłącznie z modyfikatorem.
+- **Czary:** Exori Frigo (lód), Exori Tera (ziemia) – zasięg 3, wymagają linii wzroku, CD 2 s + grupa ataku 2 s; Exura Gran – CD 1 s; Utamo Vita – 200 s; Great Mana Potion – 1 s exhaust.
+- **Potwory** widzą gracza w obszarze ekranu 15×11 (±7, ±5) na tym samym piętrze; tracą cel po wyjściu z ekranu.
+- **Akcje (13):** 4 kierunki, 4 ukosy, Exori Frigo, Exori Tera, Exura Gran, mikstura many, czekaj.
+- **Nagrody:** +100 zabicie, −5 za każde trafienie, −1000 śmierć, −1 za każde 500 ms czasu gry, −0.5 akcja niemożliwa, +2 punkt trasy.
 
-## Format eksportowanego modelu
+## MapParser (PNG → siatka)
 
-`druid_policy.npz` (zawsze) — zwykłe archiwum numpy, ładowane z `allow_pickle=False`:
+1. Obraz wczytywany jako RGBA (Pillow, awaryjnie Qt `QImage`).
+2. Piksel jest blokujący, gdy jego kolor mieści się w tolerancji (maks. różnica na kanał) od `#000000` lub `#0000FF`, albo gdy jest przezroczysty.
+3. Obraz dzielony na kafle `piksele na pole × piksele na pole` (32 dla zrzutu z klienta, 1 dla eksportu minimapy).
+4. Kafel = przeszkoda (1), gdy blokujących pikseli jest ≥ progu zajętości (domyślnie 50%); reszta = 0.
 
-| Klucz | Kształt | Opis |
-|---|---|---|
-| `W0`, `b0` | (119, 128), (128,) | warstwa 1, ReLU |
-| `W1`, `b1` | (128, 128), (128,) | warstwa 2, ReLU |
-| `W2`, `b2` | (128, 7), (7,) | wyjście: Q-wartości akcji (bez aktywacji) |
-| `metadata` | string JSON | `layer_sizes`, `feature_names` (kolejność cech!), `action_names`, stałe obserwacji, statystyki treningu, `env_config` |
+Kolizje są trzymane per piętro Z (Tibia: 7 = parter); GUI pokazuje jedno piętro naraz. Ręcznie malowane przeszkody i wynik parsera trafiają do tej samej siatki.
 
-Inferencja: `q = relu(relu(x@W0+b0)@W1+b1)@W2+b2`, akcja = `argmax(q)`.
+## Dane potworów
 
-`druid_policy.pt` (gdy zainstalowany PyTorch) — `{"state_dict", "metadata"}`; `state_dict` pasuje do
-`nn.Sequential(nn.Linear(119,128), nn.ReLU(), nn.Linear(128,128), nn.ReLU(), nn.Linear(128,7))`.
+Wartości w `monsters.json` pochodzą z ogólnej wiedzy o Tibii i są **przybliżone** — przed poważnym treningiem zweryfikuj je z TibiaWiki. Format: `elemental_resistances` = procent otrzymywanych obrażeń (100 neutralnie, 0 immunitet, 120 słabość).
 
-W `brainstem.py` wypełniasz `GameSnapshot` danymi z gry, wołasz `encode_observation()` z `rl_twin/observation.py`
-(ten sam kod co w treningu — nie przepisuj go) i podajesz wynik do `BrainstemPolicy.act()`.
+## Format eksportu modelu
+
+`druid_policy.npz`: `W0,b0` (190→128), `W1,b1` (128→128), `W2,b2` (128→13) + `metadata` (JSON: `feature_names`, `action_names`, stałe obserwacji, `env_config`). Inferencja: `argmax(relu(relu(x@W0+b0)@W1+b1)@W2+b2)`. Przy zainstalowanym PyTorch dodatkowo `druid_policy.pt` zgodny z `nn.Sequential(Linear, ReLU, Linear, ReLU, Linear)`.
+
+W `brainstem.py`: wypełnij `GameSnapshot`, przepuść przez `encode_observation()` z `rl_twin/observation.py` (nie przepisuj — kolejność cech musi się zgadzać) i podaj do `BrainstemPolicy.act_name()`. Modele z fazy 1 (119 cech, 7 akcji) nie pasują do fazy 2 — trzeba je wytrenować od nowa.

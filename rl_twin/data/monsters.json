@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "_schema": {
+    "hp": "max hit points",
+    "exp": "experience granted on kill (base, no stage multiplier)",
+    "speed": "base speed, same unit as player speed (2 * (level - 1) + 110)",
+    "armor": "physical armor; reduces physical damage only (Tibia blockHit rule)",
+    "melee": "[min, max] physical melee damage per hit",
+    "attack_interval_ms": "time between melee attacks",
+    "elemental_resistances": "damage taken in percent: 100 = neutral, 0 = immune, 120 = 20% weakness, 80 = 20% resistance"
+  },
+  "_source": "Approximate values from general Tibia knowledge. Verify against TibiaWiki before relying on exact numbers.",
+  "monsters": [
+    {
+      "name": "Rotworm",
+      "hp": 65,
+      "exp": 40,
+      "speed": 140,
+      "armor": 8,
+      "melee": [0, 40],
+      "attack_interval_ms": 2000,
+      "elemental_resistances": {"physical": 100, "ice": 80, "earth": 100, "fire": 110, "energy": 100, "death": 100, "holy": 100}
+    },
+    {
+      "name": "Minotaur",
+      "hp": 100,
+      "exp": 50,
+      "speed": 170,
+      "armor": 11,
+      "melee": [0, 45],
+      "attack_interval_ms": 2000,
+      "elemental_resistances": {"physical": 100, "ice": 100, "earth": 100, "fire": 100, "energy": 100, "death": 100, "holy": 100}
+    },
+    {
+      "name": "Cyclops",
+      "hp": 260,
+      "exp": 150,
+      "speed": 190,
+      "armor": 20,
+      "melee": [0, 105],
+      "attack_interval_ms": 2000,
+      "elemental_resistances": {"physical": 100, "ice": 100, "earth": 100, "fire": 100, "energy": 100, "death": 110, "holy": 110}
+    },
+    {
+      "name": "Tarantula",
+      "hp": 225,
+      "exp": 120,
+      "speed": 214,
+      "armor": 20,
+      "melee": [0, 90],
+      "attack_interval_ms": 2000,
+      "elemental_resistances": {"physical": 100, "ice": 80, "earth": 0, "fire": 115, "energy": 100, "death": 100, "holy": 100}
+    },
+    {
+      "name": "Giant Spider",
+      "hp": 1300,
+      "exp": 900,
+      "speed": 240,
+      "armor": 43,
+      "melee": [0, 300],
+      "attack_interval_ms": 2000,
+      "elemental_resistances": {"physical": 100, "ice": 100, "earth": 0, "fire": 110, "energy": 100, "death": 100, "holy": 100}
+    },
+    {
+      "name": "Dragon",
+      "hp": 1000,
+      "exp": 700,
+      "speed": 172,
+      "armor": 25,
+      "melee": [0, 120],
+      "attack_interval_ms": 2000,
+      "elemental_resistances": {"physical": 100, "ice": 110, "earth": 20, "fire": 0, "energy": 80, "death": 100, "holy": 100}
+    },
+    {
+      "name": "Dragon Lord",
+      "hp": 1900,
+      "exp": 2100,
+      "speed": 200,
+      "armor": 30,
+      "melee": [0, 230],
+      "attack_interval_ms": 2000,
+      "elemental_resistances": {"physical": 100, "ice": 110, "earth": 20, "fire": 0, "energy": 80, "death": 100, "holy": 100}
+    },
+    {
+      "name": "Hydra",
+      "hp": 2350,
+      "exp": 2100,
+      "speed": 220,
+      "armor": 35,
+      "melee": [0, 270],
+      "attack_interval_ms": 2000,
+      "elemental_resistances": {"physical": 100, "ice": 50, "earth": 0, "fire": 110, "energy": 110, "death": 100, "holy": 100}
+    },
+    {
+      "name": "Demon",
+      "hp": 8200,
+      "exp": 6000,
+      "speed": 256,
+      "armor": 48,
+      "melee": [0, 500],
+      "attack_interval_ms": 2000,
+      "elemental_resistances": {"physical": 75, "ice": 112, "earth": 60, "fire": 0, "energy": 50, "death": 80, "holy": 112}
+    }
+  ]
+}

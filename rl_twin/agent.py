@@ -12,17 +12,11 @@ from dataclasses import asdict, dataclass
 
 import numpy as np
 
-from .observation import (
-    ACTION_NAMES,
-    ATTACK_RANGE,
-    FEATURE_NAMES,
-    OBS_SIZE,
-    SIGHT_RANGE,
-    VIEW_RADIUS,
-)
+from .observation import ACTION_NAMES, FEATURE_NAMES, OBS_SIZE, VIEW_RADIUS
+from .physics import SERVER_TICK_MS, VIEW_RANGE_X, VIEW_RANGE_Y
 
 EXPORT_FORMAT = "rl_twin.dqn_policy"
-EXPORT_VERSION = 1
+EXPORT_VERSION = 2
 
 
 @dataclass
@@ -221,8 +215,9 @@ class DQNAgent:
             "action_names": ACTION_NAMES,
             "observation_constants": {
                 "view_radius": VIEW_RADIUS,
-                "sight_range": SIGHT_RANGE,
-                "attack_range": ATTACK_RANGE,
+                "view_range_x": VIEW_RANGE_X,
+                "view_range_y": VIEW_RANGE_Y,
+                "server_tick_ms": SERVER_TICK_MS,
             },
             "training": {
                 "total_steps": self.total_steps,
