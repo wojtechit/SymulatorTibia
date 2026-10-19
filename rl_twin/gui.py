@@ -13,12 +13,14 @@ from PyQt5.QtCore import QEvent, QPoint, QPointF, Qt, QThread, QTimer, pyqtSigna
 from PyQt5.QtGui import (QBrush, QColor, QFont, QIcon, QImage, QPainter, QPainterPath, QPalette, QPen, QPixmap,
                          QPolygonF)
 from PyQt5.QtWidgets import (
+    QAction,
     QApplication,
     QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDockWidget,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -40,14 +42,15 @@ from PyQt5.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QRadioButton,
     QScrollArea,
     QSpinBox,
-    QSplitter,
     QStackedWidget,
     QTextEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -78,7 +81,11 @@ from .env import (
     grid_to_rows,
 )
 from .mapparser import DEFAULT_WALL_COLORS, MapParser, color_label, load_rgba, mask_to_cells, palette
-from .scripts import export_script, import_script
+from .scripts import export_script, import_script, json_script, text_script
+from .hunting import build_ground, load_grounds
+from .otbm import load_items_otb, load_items_xml, load_otbm_area, read_otbm_tiles
+from .project import ProjectError, load_project, project_dict, save_project
+from .spawns import SpawnError, default_spawn_file, in_window, load_spawns, place
 from .tactics import DEFAULT_ZONE_RADIUS, STATE_LABELS_PL, ZONE_LABELS_PL, TacticsConfig, make_zone
 from .terrain import encode_speed, load_client_minimap, stairs_mask
 from .tibiamaps import load_area as load_tibiamaps_area, locate as locate_on_tibiamaps
@@ -109,6 +116,10 @@ TOOL_MONSTER = "monster"
 TOOL_OBSTACLE = "obstacle"
 TOOL_MOVE = "move"
 CONTROL_KEYBOARD, CONTROL_RULES, CONTROL_AGENT = "keyboard", "rules", "agent"
+LAYER_WALLS, LAYER_SPAWNS, LAYER_WAYPOINTS, LAYER_ZONES, LAYER_HEATMAP = "walls", "spawns", "waypoints", "zones", "heatmap"
+LAYERS = (LAYER_WALLS, LAYER_SPAWNS, LAYER_WAYPOINTS, LAYER_ZONES, LAYER_HEATMAP)
+LAYER_LABELS_PL = {LAYER_WALLS: "Ściany", LAYER_SPAWNS: "Spawny", LAYER_WAYPOINTS: "Trasa",
+                   LAYER_ZONES: "Strefy", LAYER_HEATMAP: "Heatmapa"}
 TOOL_LURE, TOOL_ARENA, TOOL_ORBIT = "lure", "arena", "orbit"
 ZONE_COLORS = {"lure": "#ffa726", "arena": "#ef5350", "orbit": "#26c6da"}
 MARKER_PICK_PX = 14   # click radius (screen pixels) for picking spawn / waypoint markers
@@ -260,6 +271,11 @@ class GridCanvas(QGraphicsView):
         self._monster_items = []
         self._overlay_items = []     # AoE flashes and danger map, rebuilt every sync
         self.show_danger = False
+        self.layers = {name: name != LAYER_HEATMAP for name in LAYERS}
+        self.visits = {}             # z -> float32 (rows, cols) druid presence per visual tick (heatmap)
+        self._heatmap_item = None
+        self._heatmap_buffer = None
+        self._heatmap_dirty = 0
 
         self._scene.setSceneRect(0, 0, self.cols * CELL, self.rows * CELL)
         self._render_overlay()
@@ -356,8 +372,51 @@ class GridCanvas(QGraphicsView):
             self._undo.append(self._snapshot())
             self._restore(self._redo.pop())
 
+    def set_layer(self, name, visible):
+        self.layers[name] = bool(visible)
+        self.refresh()
+
+    def clear_heatmap(self):
+        self.visits = {}
+        self._render_heatmap()
+
+    def _render_heatmap(self):
+        """Where the druid spent time (log scale, violet -> cyan: no Tibia minimap colour looks like it)."""
+        visits = self.visits.get(self.floor)
+        show = self.layers[LAYER_HEATMAP] and visits is not None and visits.shape == (self.rows, self.cols) and visits.any()
+        if self._heatmap_item is None:
+            self._heatmap_item = QGraphicsPixmapItem()
+            self._heatmap_item.setZValue(2)
+            self._heatmap_item.setScale(CELL)
+            self._heatmap_item.setTransformationMode(Qt.FastTransformation)
+            self._scene.addItem(self._heatmap_item)
+        self._heatmap_item.setVisible(bool(show))
+        if not show:
+            return
+        level = np.log1p(visits) / np.log1p(visits.max())
+        rgba = np.zeros((self.rows, self.cols, 4), dtype=np.uint8)
+        rgba[..., 0] = (170 * (1 - level)).astype(np.uint8)
+        rgba[..., 1] = (40 + 215 * level).astype(np.uint8)
+        rgba[..., 2] = 255
+        rgba[..., 3] = np.where(visits > 0, 120 + level * 120, 0).astype(np.uint8)
+        self._heatmap_buffer = np.ascontiguousarray(rgba)
+        image = QImage(self._heatmap_buffer.data, self.cols, self.rows, self.cols * 4, QImage.Format_RGBA8888)
+        self._heatmap_item.setPixmap(QPixmap.fromImage(image))
+
+    def record_visit(self, x, y, z):
+        visits = self.visits.get(z)
+        if visits is None or visits.shape != (self.rows, self.cols):
+            visits = self.visits[z] = np.zeros((self.rows, self.cols), dtype=np.float32)
+        if 0 <= x < self.cols and 0 <= y < self.rows:
+            visits[y, x] += 1.0
+        self._heatmap_dirty += 1
+        if self._heatmap_dirty >= 10 and self.layers[LAYER_HEATMAP]:
+            self._heatmap_dirty = 0
+            self._render_heatmap()
+
     def refresh(self):
         self._render_overlay()
+        self._render_heatmap()
         self._redraw_spawns()
         self._redraw_waypoints()
         self._redraw_transitions()
@@ -370,7 +429,7 @@ class GridCanvas(QGraphicsView):
             self._scene.removeItem(item)
         self._zone_items = []
         for zone in self.zones:
-            if zone["z"] != self.floor:
+            if zone["z"] != self.floor or not self.layers[LAYER_ZONES]:
                 continue
             color = QColor(ZONE_COLORS[zone["kind"]])
             cx, cy = zone["x"] * CELL + CELL / 2, zone["y"] * CELL + CELL / 2
@@ -439,7 +498,7 @@ class GridCanvas(QGraphicsView):
             self._scene.removeItem(item)
         self._transition_items = []
         for x, y, z, _x2, _y2, z2 in self.transitions:
-            if z != self.floor:
+            if z != self.floor or not self.layers[LAYER_WALLS]:
                 continue
             down = z2 > z
             points = [QPoint(-7, -5), QPoint(7, -5), QPoint(0, 7)] if down else [QPoint(-7, 5), QPoint(7, 5), QPoint(0, -7)]
@@ -522,6 +581,7 @@ class GridCanvas(QGraphicsView):
             self._overlay_item.setTransformationMode(Qt.FastTransformation)
             self._scene.addItem(self._overlay_item)
         self._overlay_item.setPixmap(QPixmap.fromImage(image))
+        self._overlay_item.setVisible(self.layers[LAYER_WALLS])
 
     def drawBackground(self, painter, rect):
         painter.fillRect(rect, QColor("#1b1c1f"))
@@ -557,7 +617,7 @@ class GridCanvas(QGraphicsView):
             self._scene.removeItem(item)
         self._spawn_items = {}
         for (x, y, z), name in self.spawns.items():
-            if z != self.floor:
+            if z != self.floor or not self.layers[LAYER_SPAWNS]:
                 continue
             # Fixed on-screen size (ItemIgnoresTransformations) so spawns stay visible at any zoom
             item = QGraphicsRectItem(-11, -11, 22, 22)
@@ -584,7 +644,7 @@ class GridCanvas(QGraphicsView):
             self._scene.removeItem(item)
         self._waypoint_items = []
         on_floor = [(i, x * CELL + CELL / 2, y * CELL + CELL / 2)
-                    for i, (x, y, z) in enumerate(self.waypoints) if z == self.floor]
+                    for i, (x, y, z) in enumerate(self.waypoints) if z == self.floor and self.layers[LAYER_WAYPOINTS]]
         pen = QPen(QColor("#ffc400"), 3)
         pen.setCosmetic(True)
         gap_pen = QPen(QColor("#ffc400"), 2, Qt.DotLine)
@@ -822,6 +882,7 @@ class GridCanvas(QGraphicsView):
             self._apply_marker_scale()
 
         druid = env.druid
+        self.record_visit(druid.x, druid.y, druid.z)
         span = STRIKE_RANGE * 2 + 1
         self._range_item.setRect((druid.x - STRIKE_RANGE) * CELL, (druid.y - STRIKE_RANGE) * CELL,
                                  span * CELL, span * CELL)
@@ -1071,6 +1132,25 @@ class TrainingWorker(QThread):
             self.failed.emit(f"{type(exc).__name__}: {exc}")
 
 
+class BackgroundJob(QThread):
+    """Runs fn(log) off the GUI thread (map / spawn ingestion); log lines and the result come back as signals."""
+    message = pyqtSignal(str)
+    done = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, fn, parent=None):
+        super().__init__(parent)
+        self.fn = fn
+
+    def run(self):
+        try:
+            result = self.fn(self.message.emit)
+        except Exception as exc:  # every loader error becomes a clean warning in the GUI
+            self.failed.emit(str(exc) or type(exc).__name__)
+            return
+        self.done.emit(result)
+
+
 class RewardPlot(QWidget):
     """Episode reward history (faint) with a 50-episode moving average (bright)."""
 
@@ -1176,6 +1256,18 @@ QTextEdit#eventLog { background-color: #000000; color: #cfcfcf; border: 1px soli
 QLabel#hint { color: #8a8f98; font-size: 9pt; }
 QScrollArea { border: none; }
 QStatusBar { background-color: #17181a; color: #9aa0a6; }
+QMenuBar { background-color: #17181a; color: #dcdcdc; }
+QMenuBar::item:selected, QMenu::item:selected { background-color: #2979ff; }
+QMenu { background-color: #2b2d31; border: 1px solid #44474d; }
+QDockWidget { color: #ffffff; font-weight: bold; }
+QDockWidget::title { background-color: #26282c; padding: 6px 8px; border-bottom: 2px solid #2979ff; }
+QTabBar::tab { background: #26282c; color: #9aa0a6; padding: 6px 12px; border: 1px solid #33363a; }
+QTabBar::tab:selected { background: #2f3237; color: #ffffff; border-bottom: 2px solid #2979ff; }
+QToolButton { background-color: #2b2d31; border: 1px solid #44474d; border-radius: 12px;
+              padding: 3px 10px; color: #9aa0a6; }
+QToolButton:checked { background-color: #1e3a6e; border-color: #2979ff; color: #ffffff; font-weight: bold; }
+QPlainTextEdit#scriptView { background-color: #0d0e10; color: #a5d6a7; border: 1px solid #333;
+                            font-family: "DejaVu Sans Mono", "Consolas", monospace; font-size: 9pt; }
 """
 
 
@@ -1202,6 +1294,12 @@ class MainWindow(QMainWindow):
         self.pending_action = None
         self.manual_running = False
         self.visual_clock_ms = 0.0
+        self.job = None
+        self.grounds = []
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(150)
+        self._preview_timer.timeout.connect(self._update_script_preview)
 
         self.visual_timer = QTimer(self)
         self.visual_timer.setTimerType(Qt.PreciseTimer)
@@ -1228,10 +1326,9 @@ class MainWindow(QMainWindow):
     # ----- UI construction ------------------------------------------------- #
 
     def _build_ui(self):
-        splitter = QSplitter(Qt.Horizontal)
-
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
+        """Map workspace in the centre; panel, script preview and log as dockable, collapsible sidebars."""
+        central = QWidget()
+        left_layout = QVBoxLayout(central)
         left_layout.setContentsMargins(6, 6, 3, 6)
         self.canvas = GridCanvas()
         self.canvas.scenario_changed.connect(self._on_scenario_changed)
@@ -1240,46 +1337,290 @@ class MainWindow(QMainWindow):
                 "Edycja mapy zablokowana - kliknij 'Reset epizodu' (albo zatrzymaj trening), aby edytować.", 5000))
         self.canvas.move_rejected.connect(
             lambda *_: self.statusBar().showMessage("Nie można tu przenieść: ściana, poza mapą albo zajęte pole.", 4000))
-        self.canvas.cell_hovered.connect(
-            lambda x, y: self.cell_label.setText(f"Pole: ({x}, {y}, {self.canvas.floor})"))
+        self.canvas.cell_hovered.connect(self._on_cell_hovered)
+        left_layout.addLayout(self._build_layer_bar())
         left_layout.addWidget(self.canvas, 1)
         hint = QLabel("LPM: narzędzie (Przesuń: chwyć i upuść)  |  PPM na znaczniku: usuń  |  ŚPM: widok  |  "
                       "Kółko: zoom  |  PgUp/PgDn: piętro  |  Ctrl+Z / Ctrl+Y: cofnij / ponów  |  Delete: ostatni punkt")
         hint.setObjectName("hint")
         hint.setAlignment(Qt.AlignCenter)
+        hint.setWordWrap(True)
         left_layout.addWidget(hint)
-        splitter.addWidget(left)
+        self.setCentralWidget(central)
 
         controls = QWidget()
         controls_layout = QVBoxLayout(controls)
         controls_layout.setContentsMargins(3, 0, 6, 0)
-        controls_layout.addWidget(self._build_character_group())
+        controls_layout.addWidget(self._build_sources_group())
         controls_layout.addWidget(self._build_editor_group())
         controls_layout.addWidget(self._build_tactics_group())
         controls_layout.addWidget(self._build_mode_group())
+        controls_layout.addWidget(self._build_character_group())
         controls_layout.addWidget(self._build_model_group())
         controls_layout.addStretch(1)
         scroll = QScrollArea()
         scroll.setWidget(controls)
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setMinimumWidth(controls.minimumSizeHint().width() + scroll.verticalScrollBar().sizeHint().width() + 8)
 
-        right_split = QSplitter(Qt.Vertical)
-        right_split.addWidget(scroll)
-        right_split.addWidget(self._build_log_group())
-        right_split.setSizes([700, 240])
-        right_split.setMinimumWidth(580)
-        right_split.setMaximumWidth(740)
-        splitter.addWidget(right_split)
-        splitter.setStretchFactor(0, 1)
-        splitter.setSizes([980, 600])
-        self.setCentralWidget(splitter)
+        self.panel_dock = self._dock("Panel edytora", "panel", scroll, Qt.RightDockWidgetArea)
+        self.script_dock = self._dock("Podgląd skryptu (na żywo)", "script", self._build_script_panel(),
+                                      Qt.RightDockWidgetArea)
+        self.log_dock = self._dock("Dziennik zdarzeń", "log", self._build_log_group(), Qt.RightDockWidgetArea)
+        self.splitDockWidget(self.panel_dock, self.script_dock, Qt.Vertical)
+        self.tabifyDockWidget(self.script_dock, self.log_dock)
+        self.log_dock.raise_()
+        self.resizeDocks([self.panel_dock, self.script_dock], [640, 280], Qt.Vertical)
+        self.resizeDocks([self.panel_dock], [600], Qt.Horizontal)
+        self._build_menus()
 
         self.cell_label = QLabel("Pole: -")
         self.scenario_label = QLabel()
+        self.job_bar = QProgressBar()
+        self.job_bar.setRange(0, 0)
+        self.job_bar.setMaximumWidth(160)
+        self.job_bar.setVisible(False)
         self.statusBar().addWidget(self.cell_label)
         self.statusBar().addWidget(self.scenario_label)
+        self.statusBar().addPermanentWidget(self.job_bar)
         self._on_scenario_changed()
+
+    def _dock(self, title, name, widget, area):
+        dock = QDockWidget(title, self)
+        dock.setObjectName(f"dock_{name}")
+        dock.setWidget(widget)
+        dock.setFeatures(QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable
+                         | QDockWidget.DockWidgetFloatable)
+        self.addDockWidget(area, dock)
+        return dock
+
+    def _build_menus(self):
+        bar = self.menuBar()
+        file_menu = bar.addMenu("&Plik")
+        for text, slot, shortcut in (("Zapisz projekt…", self.save_scenario, "Ctrl+S"),
+                                     ("Wczytaj projekt…", self.load_scenario, "Ctrl+O"),
+                                     (None, None, None),
+                                     ("Eksport skryptu trasy…", self.export_route_script, "Ctrl+E"),
+                                     ("Import skryptu trasy…", self.import_route_script, None),
+                                     (None, None, None),
+                                     ("Zamknij", self.close, "Ctrl+Q")):
+            if text is None:
+                file_menu.addSeparator()
+                continue
+            action = file_menu.addAction(text)
+            action.triggered.connect(lambda *_, slot=slot: slot())
+            if shortcut:
+                action.setShortcut(shortcut)
+        view_menu = bar.addMenu("&Widok")
+        for dock in (self.panel_dock, self.script_dock, self.log_dock):
+            view_menu.addAction(dock.toggleViewAction())
+        view_menu.addSeparator()
+        self.stream_action = QAction("Tryb streamera (duże czcionki)", self, checkable=True)
+        self.stream_action.toggled.connect(self.set_stream_mode)
+        view_menu.addAction(self.stream_action)
+        layer_menu = bar.addMenu("&Warstwy")
+        for name in LAYERS:
+            action = QAction(LAYER_LABELS_PL[name], self, checkable=True)
+            action.setChecked(self.canvas.layers[name])
+            action.toggled.connect(lambda on, name=name: self._set_layer(name, on))
+            layer_menu.addAction(action)
+            self.layer_actions[name] = action
+        layer_menu.addSeparator()
+        layer_menu.addAction("Wyczyść heatmapę").triggered.connect(lambda *_: self.canvas.clear_heatmap())
+
+    def _build_layer_bar(self):
+        row = QHBoxLayout()
+        row.setSpacing(4)
+        title = QLabel("Warstwy:")
+        title.setObjectName("hint")
+        row.addWidget(title)
+        self.layer_buttons, self.layer_actions = {}, {}
+        for name in LAYERS:
+            button = QToolButton()
+            button.setObjectName("layerButton")
+            button.setText(LAYER_LABELS_PL[name])
+            button.setCheckable(True)
+            button.setChecked(self.canvas.layers[name])
+            button.toggled.connect(lambda on, name=name: self._set_layer(name, on))
+            row.addWidget(button)
+            self.layer_buttons[name] = button
+        clear = QToolButton()
+        clear.setText("⟲ heatmapa")
+        clear.setToolTip("Wyczyść heatmapę obecności druida")
+        clear.clicked.connect(lambda *_: self.canvas.clear_heatmap())
+        row.addWidget(clear)
+        row.addStretch(1)
+        self.floor_hint = QLabel()
+        self.floor_hint.setObjectName("hint")
+        row.addWidget(self.floor_hint)
+        return row
+
+    def _set_layer(self, name, on):
+        for widget in (self.layer_buttons.get(name), self.layer_actions.get(name)):
+            if widget is not None and widget.isChecked() != on:
+                widget.blockSignals(True)
+                widget.setChecked(on)
+                widget.blockSignals(False)
+        self.canvas.set_layer(name, on)
+
+    def set_stream_mode(self, on):
+        size = "13pt" if on else "10pt"
+        app = QApplication.instance()
+        app.setStyleSheet(STYLESHEET.replace("font-size: 10pt;", f"font-size: {size};", 1))
+        self.log("system", "Tryb streamera włączony (duże czcionki)." if on else "Tryb streamera wyłączony.")
+
+    def _on_cell_hovered(self, x, y):
+        ox, oy = self.origin_x_input.value(), self.origin_y_input.value()
+        world = f"  świat ({x + ox}, {y + oy}, {self.canvas.floor})" if (ox or oy) else ""
+        self.cell_label.setText(f"Pole: ({x}, {y}, {self.canvas.floor}){world}")
+
+    # ----- map & spawn sources ------------------------------------------------ #
+
+    def _build_sources_group(self):
+        group = QGroupBox("Mapa świata i spawny (źródła danych)")
+        layout = QVBoxLayout(group)
+        row = QHBoxLayout()
+        self.ground_combo = QComboBox()
+        self.ground_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.ground_combo.setMinimumContentsLength(12)
+        try:
+            self.grounds = load_grounds()
+        except (OSError, ValueError, KeyError) as exc:
+            self.grounds = []
+            self.ground_combo.addItem(f"Brak listy łowisk ({exc})")
+        for i, ground in enumerate(self.grounds):
+            self.ground_combo.addItem(ground.label, i)
+            self.ground_combo.setItemData(i, f"{ground.cols}x{ground.rows} pól od ({ground.x}, {ground.y}), "
+                                             f"piętra {ground.floors}, cel: {', '.join(ground.monsters)}",
+                                          Qt.ToolTipRole)
+        self.ground_button = QPushButton("Wczytaj")
+        self.ground_button.setObjectName("primary")
+        self.ground_button.setToolTip("Pobiera prawdziwą mapę (ściany, prędkość, schody, sąsiednie piętra) i "
+                                      "spawny z bazy Canary na dokładnych współrzędnych [x, y, z].")
+        self.ground_button.clicked.connect(self.load_hunting_ground)
+        row.addWidget(self.ground_combo, 1)
+        row.addWidget(self.ground_button)
+        layout.addLayout(row)
+
+        buttons = QGridLayout()
+        self.load_map_button = QPushButton("Mapa PNG…")
+        self.load_map_button.clicked.connect(self.load_map_dialog)
+        self.tibiamaps_button = QPushButton("Prawdziwe kolizje (tibiamaps)")
+        self.tibiamaps_button.setToolTip("Znajduje wczytaną minimapę na mapie świata (tibiamaps.io) i bierze z niej "
+                                         "przechodniość pól z pathfindingu Tibii: kamienie, czaszki, stalagmity "
+                                         "na piasku są ścianą, choć na minimapie wyglądają jak podłoga. "
+                                         "Dodaje też piętra wyżej/niżej ze schodami i ustawia współrzędne świata.")
+        self.tibiamaps_button.clicked.connect(self.calibrate_tibiamaps)
+        self.client_map_button = QPushButton("Minimapa klienta…")
+        self.client_map_button.setToolTip("Import folderu minimapy klienta Tibii (Minimap_Color / WaypointCost): "
+                                          "ściany, koszt pól i schody między piętrami")
+        self.client_map_button.clicked.connect(self.import_client_minimap)
+        self.otbm_button = QPushButton("Mapa OTBM (OTServ)…")
+        self.otbm_button.setToolTip("Wycinek mapy serwera .otbm + items.otb/items.xml (ściany, prędkość, schody) "
+                                    "i jej plik spawnów")
+        self.otbm_button.clicked.connect(self.import_otbm)
+        self.spawn_db_button = QPushButton("Spawny z bazy (Canary)")
+        self.spawn_db_button.setToolTip("Stawia potwory z globalnej bazy spawnów na obecnym wycinku mapy "
+                                        "(wymaga współrzędnych świata pola [0,0])")
+        self.spawn_db_button.clicked.connect(lambda *_: self.load_native_spawns(None))
+        self.spawn_file_button = QPushButton("Spawny z pliku XML/JSON…")
+        self.spawn_file_button.clicked.connect(self.load_spawn_file)
+        for i, button in enumerate((self.load_map_button, self.tibiamaps_button, self.client_map_button,
+                                    self.otbm_button, self.spawn_db_button, self.spawn_file_button)):
+            buttons.addWidget(button, i // 2, i % 2)
+        layout.addLayout(buttons)
+        self._source_buttons = [self.ground_button, self.load_map_button, self.tibiamaps_button,
+                                self.client_map_button, self.otbm_button, self.spawn_db_button, self.spawn_file_button]
+        return group
+
+    def _build_script_panel(self):
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(4, 4, 4, 4)
+        row = QHBoxLayout()
+        self.preview_format = QComboBox()
+        for label, key in (("Skrypt JSON (rl_twin.script)", "json"), ("Cavebot TXT (Node x, y, z)", "txt"),
+                           ("Projekt JSON (pełna konfiguracja)", "project")):
+            self.preview_format.addItem(label, key)
+        self.preview_format.currentIndexChanged.connect(lambda *_: self._update_script_preview())
+        copy = QPushButton("Kopiuj")
+        copy.clicked.connect(lambda *_: QApplication.clipboard().setText(self.script_view.toPlainText()))
+        row.addWidget(self.preview_format, 1)
+        row.addWidget(copy)
+        layout.addLayout(row)
+        self.script_view = QPlainTextEdit()
+        self.script_view.setObjectName("scriptView")
+        self.script_view.setReadOnly(True)
+        self.script_view.setLineWrapMode(QPlainTextEdit.NoWrap)
+        layout.addWidget(self.script_view, 1)
+        return panel
+
+    def _schedule_preview(self):
+        if hasattr(self, "script_view"):
+            self._preview_timer.start()
+
+    def _update_script_preview(self):
+        """Raw script of the current route, regenerated after every edit (debounced)."""
+        c = self.canvas
+        origin = (self.origin_x_input.value(), self.origin_y_input.value())
+        kind = self.preview_format.currentData()
+        try:
+            if kind == "txt":
+                text = text_script(c.waypoints, c.transitions, origin)
+            elif kind == "project":
+                data = project_dict(self.build_config(), self._editor_state())
+                for key in ("collision", "terrain_speed"):            # long grids: summarised for reading
+                    data[key] = {z: f"<{key}: piętro {z}, {len(v)} znaków>" for z, v in data[key].items()}
+                text = json.dumps(data, ensure_ascii=False, indent=2)
+            else:
+                script = json_script(c.waypoints, c.zones, c.transitions, origin)
+                script["spawns"] = [{"name": n, "x": x + origin[0], "y": y + origin[1], "z": z}
+                                    for (x, y, z), n in sorted(c.spawns.items())]
+                text = json.dumps(script, ensure_ascii=False, indent=2)
+        except Exception as exc:  # preview must never break editing
+            text = f"# Podgląd niedostępny: {exc}"
+        bar = self.script_view.verticalScrollBar()
+        position = bar.value()
+        self.script_view.setPlainText(text)
+        bar.setValue(position)
+
+    # ----- background jobs ---------------------------------------------------- #
+
+    def _start_job(self, label, fn, on_done):
+        """Run a loader without freezing the GUI. Returns False when another job is still running."""
+        if self.job is not None and self.job.isRunning():
+            self.statusBar().showMessage("Poczekaj - trwa wczytywanie danych.", 4000)
+            return False
+        self.job = BackgroundJob(fn, self)
+        self.job.message.connect(lambda text: self.log("system", text))
+        self.job.done.connect(lambda result: self._finish_job(label, on_done, result))
+        self.job.failed.connect(lambda error: self._job_failed(label, error))
+        self.job_bar.setVisible(True)
+        self.job_bar.setFormat(label)
+        for button in self._source_buttons:
+            button.setEnabled(False)
+        self.statusBar().showMessage(f"{label}…")
+        self.log("system", f"{label}… (w tle, możesz dalej oglądać mapę)")
+        self.job.start()
+        return True
+
+    def _end_job(self):
+        self.job_bar.setVisible(False)
+        self.statusBar().clearMessage()
+        QTimer.singleShot(0, self._refresh_controls)     # the finished QThread reports isRunning() until it returns
+
+    def _finish_job(self, label, on_done, result):
+        self._end_job()
+        try:
+            on_done(result)
+        except Exception as exc:  # applying data must not take the editor down
+            self._job_failed(label, f"{type(exc).__name__}: {exc}")
+
+    def _job_failed(self, label, error):
+        self._end_job()
+        self.log("warn", f"{label}: {error}")
+        QMessageBox.warning(self, label, str(error))
 
     def _build_character_group(self):
         group = QGroupBox("Postać - Druid")
@@ -1405,8 +1746,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.palette_list)
 
         buttons = QGridLayout()
-        self.load_map_button = QPushButton("Wczytaj mapę PNG…")
-        self.load_map_button.clicked.connect(self.load_map_dialog)
         self.reparse_button = QPushButton("Parsuj kolizje ponownie")
         self.reparse_button.clicked.connect(self.reparse_map)
         self.clear_map_button = QPushButton("Wyczyść piętro")
@@ -1415,26 +1754,15 @@ class MainWindow(QMainWindow):
         self.load_db_button.clicked.connect(self.load_monster_db)
         self.clear_spawns_button = QPushButton("Usuń potwory (piętro)")
         self.clear_spawns_button.clicked.connect(self._clear_spawns)
-        self.client_map_button = QPushButton("Minimapa klienta…")
-        self.client_map_button.setToolTip("Import folderu minimapy klienta Tibii (Minimap_Color / WaypointCost): "
-                                          "ściany, koszt pól i schody między piętrami")
-        self.client_map_button.clicked.connect(self.import_client_minimap)
-        self.tibiamaps_button = QPushButton("Prawdziwe kolizje (tibiamaps)")
-        self.tibiamaps_button.setToolTip("Znajduje wczytaną minimapę na mapie świata (tibiamaps.io) i bierze z niej "
-                                         "przechodniość pól z pathfindingu Tibii: kamienie, czaszki, stalagmity "
-                                         "na piasku są ścianą, choć na minimapie wyglądają jak podłoga. "
-                                         "Dodaje też piętra wyżej/niżej ze schodami i ustawia współrzędne świata.")
-        self.tibiamaps_button.clicked.connect(self.calibrate_tibiamaps)
         self.sprites_button = QPushButton("Pobierz grafiki ponownie")
         self.sprites_button.clicked.connect(lambda *_: self.sync_sprites(force=True))
-        self.save_scenario_button = QPushButton("Zapisz scenariusz")
+        self.save_scenario_button = QPushButton("Zapisz projekt…")
         self.save_scenario_button.clicked.connect(self.save_scenario)
-        self.load_scenario_button = QPushButton("Wczytaj scenariusz")
+        self.load_scenario_button = QPushButton("Wczytaj projekt…")
         self.load_scenario_button.clicked.connect(self.load_scenario)
-        for i, button in enumerate((self.load_map_button, self.reparse_button, self.clear_map_button,
-                                    self.clear_spawns_button, self.client_map_button, self.tibiamaps_button,
-                                    self.sprites_button,
-                                    self.load_db_button, self.save_scenario_button, self.load_scenario_button)):
+        for i, button in enumerate((self.reparse_button, self.clear_map_button, self.clear_spawns_button,
+                                    self.sprites_button, self.load_db_button, self.save_scenario_button,
+                                    self.load_scenario_button)):
             buttons.addWidget(button, i // 2, i % 2)
         layout.addLayout(buttons)
         return group
@@ -1457,6 +1785,8 @@ class MainWindow(QMainWindow):
         self.recover_s_input.setSuffix(" s")
         self.origin_x_input = self._spin(0, 65_535, 0)
         self.origin_y_input = self._spin(0, 65_535, 0)
+        self.origin_x_input.valueChanged.connect(lambda *_: self._on_scenario_changed())
+        self.origin_y_input.valueChanged.connect(lambda *_: self._on_scenario_changed())
         for spin in (self.lure_min_input, self.lure_max_input):
             spin.valueChanged.connect(lambda *_: setattr(
                 self.canvas, "zone_lure_limits", (self.lure_min_input.value(), self.lure_max_input.value())))
@@ -1670,8 +2000,9 @@ class MainWindow(QMainWindow):
         return group
 
     def _build_log_group(self):
-        group = QGroupBox("Dziennik zdarzeń")
+        group = QWidget()
         layout = QVBoxLayout(group)
+        layout.setContentsMargins(4, 4, 4, 4)
         self.event_log = QTextEdit()
         self.event_log.setObjectName("eventLog")
         self.event_log.setReadOnly(True)
@@ -1778,13 +2109,15 @@ class MainWindow(QMainWindow):
         for widget in (self.level_input, self.magic_input, self.armor_input, self.potions_input,
                        self.max_steps_input, self.utamo_checkbox, self.random_monsters_input,
                        self.rod_combo, self.sd_input, self.avalanche_input, self.exp_rate_input,
-                       self.client_map_button,
                        *self._tactics_inputs,
                        self.cell_px_input, self.tolerance_input, self.fraction_input,
                        self.diagonal_input, self.ground_speed_input,
-                       self.load_map_button, self.reparse_button, self.clear_map_button,
+                       self.reparse_button, self.clear_map_button,
                        self.load_db_button, self.load_scenario_button, self.clear_spawns_button):
             widget.setEnabled(editable)
+        loading = self.job is not None and self.job.isRunning()
+        for button in self._source_buttons:
+            button.setEnabled(editable and not loading)
         self.floor_input.setEnabled(not training)
         self.manual_radio.setEnabled(not busy)
         self.training_radio.setEnabled(not busy)
@@ -2182,67 +2515,91 @@ class MainWindow(QMainWindow):
         self.sync_sprites()
         self.log("system", f"Wczytano bazę potworów: {os.path.basename(path)} ({len(self.monster_db)} pozycji).")
 
-    def save_scenario(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Zapisz scenariusz",
-                                              os.path.join(PROJECT_DIR, "scenario.json"), "JSON (*.json)")
-        if not path:
-            return
-        data = self.build_config().to_dict()
-        data["floor_maps"] = {str(z): entry for z, entry in self.canvas.floor_maps.items()}
-        data["client_minimap"] = self._client_minimap
-        data["map_wall_colors"] = [list(c) for c in sorted(self.wall_colors)]
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, ensure_ascii=False, indent=2)
-        self.log("system", f"Zapisano scenariusz: {os.path.basename(path)}")
+    def _editor_state(self):
+        return {"floor_maps": {str(z): entry for z, entry in self.canvas.floor_maps.items()},
+                "client_minimap": self._client_minimap,
+                "map_wall_colors": [list(c) for c in sorted(self.wall_colors)]}
 
-    def load_scenario(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Wczytaj scenariusz", PROJECT_DIR, "JSON (*.json)")
+    def save_scenario(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Zapisz projekt",
+                                              os.path.join(PROJECT_DIR, "projekt.json"), "JSON (*.json)")
         if not path:
             return
         try:
-            with open(path, encoding="utf-8") as handle:
-                data = json.load(handle)
-            config = EnvConfig.from_dict(data)
-            db = MonsterDatabase.load(config.monsters_file) if config.monsters_file else self.monster_db
-        except (OSError, ValueError, TypeError, KeyError) as exc:
-            QMessageBox.critical(self, "Błąd", f"Nie udało się wczytać scenariusza:\n{exc}")
+            save_project(path, self.build_config(), self._editor_state())
+        except (OSError, TypeError, ValueError) as exc:
+            self.log("warn", f"Nie udało się zapisać projektu: {exc}")
+            QMessageBox.warning(self, "Zapis projektu", f"Nie udało się zapisać:\n{exc}")
             return
+        self.log("system", f"Zapisano projekt (mapa, trasa, spawny, strefy, taktyka, skrypt): {os.path.basename(path)}")
+
+    def load_scenario(self, path=None):
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(self, "Wczytaj projekt", PROJECT_DIR, "JSON (*.json)")
+        if not path:
+            return
+        try:
+            config, data, warnings = load_project(path)
+            db = MonsterDatabase.load(config.monsters_file) if config.monsters_file else self.monster_db
+        except (ProjectError, OSError, ValueError, KeyError) as exc:
+            self.log("warn", f"Projekt {os.path.basename(path)}: {exc}")
+            QMessageBox.warning(self, "Wczytywanie projektu", str(exc))
+            return
+        unknown = sorted({s[3] for s in config.spawns if s[3] not in db})
+        if unknown:
+            warnings.append(f"Nieznane potwory pominięte (brak w bazie): {', '.join(unknown)}")
+            config.spawns = [s for s in config.spawns if s[3] in db]
+        for warning in warnings:
+            self.log("warn", f"Projekt: {warning}")
+        self.reset_manual(log=False)
         self.monster_db, self.monsters_file = db, config.monsters_file
         self._populate_monsters()
         self.sync_sprites()
         if data.get("map_wall_colors") is not None:
             self.wall_colors = {tuple(c) for c in data["map_wall_colors"]}
+        self.canvas.clear_floor_maps()
+        self.canvas.stairs = {}
+        client = data.get("client_minimap")
+        self._client_minimap = None
+        finish = lambda: self._finish_project_load(path, config, data)
+        if client and (client.get("source") in ("tibiamaps", "otbm") or os.path.isdir(client.get("folder", ""))):
+            if not self._run_client_import(client, log_prefix="Projekt: ", then=finish):
+                return
+        else:
+            finish()
+        if warnings:
+            QMessageBox.warning(self, "Projekt wczytany z uwagami", "\n".join(warnings[:12]))
+
+    def _finish_project_load(self, path, config, data):
         floor_maps = data.get("floor_maps")
         if floor_maps is None and data.get("map_image"):            # scenarios saved before multi-floor maps
             legacy_floor = data.get("map_floor") if data.get("map_floor") is not None else config.floor
             floor_maps = {str(legacy_floor): {"path": data["map_image"], "cell_px": data.get("map_cell_px", CELL),
                                               "offset": data.get("map_offset", [0, 0]), "client": False}}
         floor_maps = floor_maps or {}
-        self.canvas.clear_floor_maps()
-        self.canvas.stairs = {}
-        client = data.get("client_minimap")
-        self._client_minimap = None
-        if client and (client.get("source") == "tibiamaps" or os.path.isdir(client.get("folder", ""))):
-            self._run_client_import(client, log_prefix="Scenariusz: ")
         for z_text, entry in floor_maps.items():
-            if entry.get("client") or not entry.get("path") or not os.path.isfile(entry["path"]):
+            if entry.get("client") or not entry.get("path"):
                 continue
-            self.canvas.set_floor(int(z_text))
-            self.canvas.load_map(entry["path"], int(entry.get("cell_px", CELL)),
-                                 offset=tuple(entry.get("offset", (0, 0))), fit=False)
+            if not os.path.isfile(entry["path"]):
+                self.log("warn", f"Projekt: brak obrazu mapy piętra {z_text}: {entry['path']} - zostają same kolizje.")
+                continue
             try:
+                self.canvas.set_floor(int(z_text))
+                self.canvas.load_map(entry["path"], int(entry.get("cell_px", CELL)),
+                                     offset=tuple(entry.get("offset", (0, 0))), fit=False)
                 rgba = load_rgba(entry["path"])
                 stairs = mask_to_cells(stairs_mask(rgba), int(entry.get("cell_px", CELL)),
                                        tuple(entry.get("offset", (0, 0))), 0.3)
                 if stairs.shape == (self.canvas.rows, self.canvas.cols):
                     self.canvas.stairs[int(z_text)] = stairs.astype(bool)
                 self._map_rgba = rgba
-            except OSError:
+            except (OSError, ValueError) as exc:
                 self._map_rgba = None
+                self.log("warn", f"Projekt: obraz mapy piętra {z_text} uszkodzony ({exc}) - zostają same kolizje.")
         self.canvas.apply_config(config)
         for z_text, entry in floor_maps.items():
             if entry.get("path") and os.path.isfile(entry["path"]) and z_text not in config.collision:
-                self.log("warn", f"Scenariusz nie ma kolizji dla piętra {z_text} - parsuję {os.path.basename(entry['path'])}.")
+                self.log("warn", f"Projekt nie ma kolizji dla piętra {z_text} - parsuję {os.path.basename(entry['path'])}.")
                 self.canvas.set_floor(int(z_text))
                 waypoints, spawns = list(self.canvas.waypoints), dict(self.canvas.spawns)
                 self.load_map_file(entry["path"], fit=False)
@@ -2277,7 +2634,7 @@ class MainWindow(QMainWindow):
         index = self.monster_combo.findData(config.random_monster_type)
         if index >= 0:
             self.monster_combo.setCurrentIndex(index)
-        self.log("system", f"Wczytano scenariusz: {os.path.basename(path)}")
+        self.log("system", f"Wczytano projekt: {os.path.basename(path)}")
 
     def import_client_minimap(self):
         """Ask for the client minimap folder and the area to crop, then build walls/speeds/stairs per floor."""
@@ -2319,25 +2676,42 @@ class MainWindow(QMainWindow):
             return
         params = {"folder": folder.text(), "x": center_x.value(), "y": center_y.value(),
                   "radius": radius.value(), "floors": floor_list}
-        self.canvas.waypoints, self.canvas.spawns = [], {}
-        self._run_client_import(params)
 
-    def _run_client_import(self, params, log_prefix=""):
-        try:
-            if params.get("source") == "tibiamaps":
-                QApplication.setOverrideCursor(Qt.WaitCursor)
-                try:
-                    terrain = load_tibiamaps_area(params["x"], params["y"], params["cols"], params["rows"],
-                                                  params["floors"], log=lambda text: self.log("system", text))
-                finally:
-                    QApplication.restoreOverrideCursor()
-            else:
-                terrain = load_client_minimap(params["folder"], params["x"], params["y"], params["radius"],
-                                              params["floors"])
-        except Exception as exc:  # missing files, wrong folder, decoding problems - report, keep the old map
-            self.log("warn", f"{log_prefix}Import minimapy klienta nieudany: {exc}")
-            QMessageBox.warning(self, "Minimapa klienta", f"Import nieudany:\n{exc}")
-            return False
+        def clear_route():
+            self.canvas.waypoints, self.canvas.spawns = [], {}
+            self.canvas.refresh()
+
+        self._run_client_import(params, then=clear_route)
+
+    @staticmethod
+    def _load_terrain(params, log):
+        """Thread-safe terrain loading for every map source stored in a project ("client_minimap")."""
+        source = params.get("source")
+        if source == "tibiamaps":
+            return load_tibiamaps_area(params["x"], params["y"], params["cols"], params["rows"], params["floors"],
+                                       log=log)
+        if source == "otbm":
+            items = None
+            if params.get("items_otb"):
+                items = load_items_otb(params["items_otb"])
+            if params.get("items_xml"):
+                items = load_items_xml(params["items_xml"], items)
+            terrain, warnings = load_otbm_area(params["otbm"], params["x"], params["y"], params["cols"],
+                                               params["rows"], params["floors"], items, log=log)
+            for warning in warnings:
+                log(f"UWAGA: {warning}")
+            return terrain
+        return load_client_minimap(params["folder"], params["x"], params["y"], params["radius"], params["floors"])
+
+    def _run_client_import(self, params, log_prefix="", then=None):
+        """Load a map source in the background, install it, then call `then()`."""
+        def done(terrain):
+            self._apply_terrain(terrain, params, log_prefix)
+            if then is not None:
+                then()
+        return self._start_job(f"{log_prefix}Wczytywanie terenu", lambda log: self._load_terrain(params, log), done)
+
+    def _apply_terrain(self, terrain, params, log_prefix=""):
         self.canvas.apply_terrain(terrain)
         self._client_minimap = params
         self._map_rgba = None
@@ -2347,13 +2721,12 @@ class MainWindow(QMainWindow):
         self.origin_x_input.setValue(int(origin[0]))
         self.origin_y_input.setValue(int(origin[1]))
         for z, layer in sorted(terrain.layers.items()):
-            slow = int((layer.speed > 150).sum())
-            self.log("system", f"{log_prefix}Piętro {z}: ściany {int(layer.walls.sum())}, wolne pola {slow}, "
+            slow = int(((layer.speed > 150) & (layer.walls == 0)).sum())
+            self.log("system", f"{log_prefix}Piętro {z}: ściany {int(layer.walls.sum())}, wolniejsze podłoże {slow}, "
                                f"schody/dziury {int(layer.stairs.sum())}.")
-        self.log("system", f"{log_prefix}Minimapa klienta: obszar {terrain.layers[min(terrain.layers)].walls.shape[1]} pól, "
-                           f"początek świata {terrain.layers[min(terrain.layers)].origin}, "
-                           f"przejścia między piętrami: {len(terrain.transitions)}.")
-        return True
+        first = terrain.layers[min(terrain.layers)]
+        self.log("system", f"{log_prefix}Teren {first.walls.shape[1]}x{first.walls.shape[0]} pól, "
+                           f"początek świata {first.origin}, przejścia między piętrami: {len(terrain.transitions)}.")
 
     def calibrate_tibiamaps(self):
         """Locate the loaded minimap PNG on the world map and replace colour-guessed walls with real walkability."""
@@ -2361,41 +2734,215 @@ class MainWindow(QMainWindow):
         if self._map_rgba is None or c.map_floor is None:
             QMessageBox.information(self, "tibiamaps", "Najpierw wczytaj PNG minimapy (np. wycinek z tibiamaps.io).")
             return
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            found = locate_on_tibiamaps(self._map_rgba, log=lambda text: self.log("system", text))
-        except Exception as exc:  # no internet, unreadable cache - report, keep the current map
-            QApplication.restoreOverrideCursor()
-            self.log("warn", f"tibiamaps: {exc}")
-            QMessageBox.warning(self, "tibiamaps", f"Nie udało się pobrać/porównać mapy:\n{exc}")
+        rgba, cols, rows = self._map_rgba, c.cols, c.rows
+
+        def work(log):
+            found = locate_on_tibiamaps(rgba, log=log)
+            if found is None:
+                raise ValueError("Nie znaleziono tej mapy na mapie świata Tibii (to musi być minimapa Tibii 1:1 "
+                                 "albo powiększona x2, x3..., bez zmienionych kolorów).")
+            z = found["z"]
+            params = {"source": "tibiamaps", "x": found["x"], "y": found["y"], "cols": cols, "rows": rows,
+                      "floors": [z, z - 1, z + 1], "home": z}
+            return found, params, self._load_terrain(params, log)
+
+        def done(result):
+            found, params, terrain = result
+            old_floor, z = c.floor, found["z"]
+            before = int(c.grid().sum())
+            shift = z - old_floor
+            waypoints = [(x, y, wz + shift) for x, y, wz in c.waypoints]
+            spawns = {(x, y, sz + shift): name for (x, y, sz), name in c.spawns.items()}
+            zones = [dict(zone, z=zone["z"] + shift) for zone in c.zones]
+            self.log("system", f"tibiamaps: mapa to świat ({found['x']}, {found['y']}, piętro {z}), "
+                               f"zgodność {found['match'] * 100:.1f}%.")
+            self._apply_terrain(terrain, params, "tibiamaps: ")
+            c.waypoints, c.spawns, c.zones = waypoints, spawns, zones
+            c.set_floor(z)
+            blocked = [p for p in waypoints if p[2] in c.collision and c.collision[p[2]][p[1], p[0]]]
+            self.log("system", f"tibiamaps: ściany na piętrze {z}: {before} (z kolorów) -> {int(c.grid(z).sum())} "
+                               f"(prawdziwe). Trasa i spawny przeniesione na piętro {z}.")
+            if blocked:
+                self.log("warn", f"tibiamaps: {len(blocked)} punktów trasy stoi na nieprzechodnim polu: "
+                                 f"{[(x, y) for x, y, _ in blocked][:8]} - przesuń je.")
+            c.refresh()
+
+        self._start_job("Kalibracja z mapą Tibii", work, done)
+
+    def load_hunting_ground(self):
+        index = self.ground_combo.currentData()
+        if index is None or not self.grounds:
+            QMessageBox.information(self, "Łowiska", "Lista łowisk jest pusta.")
             return
-        QApplication.restoreOverrideCursor()
-        if found is None:
-            self.log("warn", "tibiamaps: nie znaleziono tego fragmentu na mapie świata (to musi być minimapa "
-                             "Tibii 1:1 albo powiększona x2, x3..., bez zmienionych kolorów).")
-            QMessageBox.warning(self, "tibiamaps", "Nie znaleziono tej mapy na mapie świata Tibii.")
-            return
-        old_floor, z = c.floor, found["z"]
-        before = int(c.grid().sum())
-        shift = z - old_floor
-        waypoints = [(x, y, wz + shift) for x, y, wz in c.waypoints]
-        spawns = {(x, y, sz + shift): name for (x, y, sz), name in c.spawns.items()}
-        zones = [dict(zone, z=zone["z"] + shift) for zone in c.zones]
-        self.log("system", f"tibiamaps: mapa to świat ({found['x']}, {found['y']}, piętro {z}), "
-                           f"zgodność {found['match'] * 100:.1f}%.")
-        params = {"source": "tibiamaps", "x": found["x"], "y": found["y"], "cols": c.cols, "rows": c.rows,
-                  "floors": [z, z - 1, z + 1], "home": z}
-        if not self._run_client_import(params, log_prefix="tibiamaps: "):
-            return
-        c.waypoints, c.spawns, c.zones = waypoints, spawns, zones
-        c.set_floor(z)
-        blocked = [p for p in waypoints if p[2] in c.collision and c.collision[p[2]][p[1], p[0]]]
-        self.log("system", f"tibiamaps: ściany na piętrze {z}: {before} (z kolorów) -> {int(c.grid(z).sum())} "
-                           f"(prawdziwe). Trasa i spawny przeniesione na piętro {z}.")
+        ground = self.grounds[index]
+        known = set(self.monster_db.names())
+
+        def done(data):
+            self.reset_manual(log=False)
+            c = self.canvas
+            c.push_undo()
+            c.waypoints, c.spawns, c.zones = [], {}, []
+            params = {"source": "tibiamaps", "x": ground.x, "y": ground.y, "cols": ground.cols,
+                      "rows": ground.rows, "floors": list(ground.floors), "home": ground.z, "ground": ground.name}
+            self._apply_terrain(data.terrain, params, "Łowisko: ")
+            c.spawns = {(x, y, z): name for x, y, z, name in data.spawns}
+            c.clear_heatmap()
+            c.set_floor(ground.z)
+            c.refresh()
+            c.fit_map()
+            per_floor = {}
+            for x, y, z, name in data.spawns:
+                per_floor.setdefault(z, {}).setdefault(name, 0)
+                per_floor[z][name] += 1
+            self.log("system", f"Łowisko {ground.name}: świat ({ground.x}, {ground.y}), piętro {ground.z}, "
+                               f"{ground.cols}x{ground.rows} pól. Spawny: " + "; ".join(
+                                   f"z{z}: " + ", ".join(f"{n} x{k}" for n, k in sorted(names.items()))
+                                   for z, names in sorted(per_floor.items())))
+            self._report_spawn_problems(data.unknown, data.blocked)
+            for warning in data.warnings:
+                self.log("warn", warning)
+            self.log("system", "Postaw punkty trasy (narzędzie 'Punkty trasy') i strefy, potem Start.")
+
+        self._start_job(f"Łowisko: {ground.name}", lambda log: build_ground(ground, known, log=log), done)
+
+    def _report_spawn_problems(self, unknown, blocked):
+        if unknown:
+            self.log("warn", f"Pominięto potwory spoza bazy symulatora ({sum(unknown.values())}): " + ", ".join(
+                f"{n} x{k}" for n, k in sorted(unknown.items(), key=lambda item: -item[1])[:12])
+                + " - dodaj je do rl_twin/data/monsters.json, aby je symulować.")
         if blocked:
-            self.log("warn", f"tibiamaps: {len(blocked)} punktów trasy stoi na nieprzechodnim polu: "
-                             f"{[(x, y) for x, y, _ in blocked][:8]} - przesuń je.")
-        c.refresh()
+            self.log("warn", f"{blocked} spawnów bez wolnego pola w pobliżu (ściana / brak piętra) - pominięte.")
+
+    def load_native_spawns(self, path=None):
+        """Place spawns from a database onto the current map window by their world [x, y, z]."""
+        c = self.canvas
+        ox, oy = self.origin_x_input.value(), self.origin_y_input.value()
+        if not (ox or oy):
+            QMessageBox.information(self, "Spawny", "Mapa nie ma współrzędnych świata. Wczytaj łowisko, minimapę "
+                                                    "klienta, OTBM albo kliknij 'Prawdziwe kolizje (tibiamaps)'.")
+            return
+        cols, rows = c.cols, c.rows
+        walls = {z: grid.copy() for z, grid in c.collision.items()}
+        known = set(self.monster_db.names())
+
+        def work(log):
+            source = path or default_spawn_file(log=log)
+            spawns = load_spawns(source)
+            local = in_window(spawns, ox, oy, cols, rows, walls.keys())
+            return source, len(spawns), place(local, walls, known)
+
+        def done(result):
+            source, total, (placed, unknown, blocked) = result
+            c.push_undo()
+            c.spawns = {(x, y, z): name for x, y, z, name in placed}
+            c.refresh()
+            self.log("system", f"Spawny z {os.path.basename(source)}: {total} w bazie, na tym wycinku "
+                               f"postawiono {len(placed)} (piętra {sorted({p[2] for p in placed})}).")
+            self._report_spawn_problems(unknown, blocked)
+            if not placed:
+                self.log("warn", "Na tym wycinku nie ma żadnych znanych potworów z bazy.")
+
+        self._start_job("Wczytywanie spawnów", work, done)
+
+    def load_spawn_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Plik spawnów", PROJECT_DIR,
+                                              "Spawny (*.xml *.json);;Wszystkie pliki (*)")
+        if path:
+            self.load_native_spawns(path)
+
+    def import_otbm(self):
+        """Window of an OTServ .otbm map with item flags and its spawn file."""
+        previous = self._client_minimap if (self._client_minimap or {}).get("source") == "otbm" else {}
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Mapa OTBM (OTServ / RME)")
+        form = QFormLayout(dialog)
+        fields = {}
+        for key, label, pattern in (("otbm", "Mapa .otbm:", "Mapa (*.otbm)"),
+                                    ("items_otb", "items.otb:", "items.otb (*.otb)"),
+                                    ("items_xml", "items.xml:", "items.xml (*.xml)"),
+                                    ("spawns", "Spawny (XML):", "Spawny (*.xml *.json)")):
+            edit = QLineEdit(previous.get(key, ""))
+            browse = QPushButton("…")
+            browse.clicked.connect(lambda *_, edit=edit, pattern=pattern: edit.setText(
+                QFileDialog.getOpenFileName(dialog, "Wybierz plik", edit.text() or PROJECT_DIR, pattern)[0]
+                or edit.text()))
+            row = QHBoxLayout()
+            row.addWidget(edit, 1)
+            row.addWidget(browse)
+            form.addRow(label, row)
+            fields[key] = edit
+        center_x = self._spin(0, 65_535, previous.get("x", 1000) + previous.get("cols", 0) // 2)
+        center_y = self._spin(0, 65_535, previous.get("y", 1000) + previous.get("rows", 0) // 2)
+        radius = self._spin(8, 256, previous.get("cols", 97) // 2)
+        floors = QLineEdit(",".join(str(z) for z in previous.get("floors", [7, 6, 8])))
+        hint = QLabel("items.otb daje ściany i prędkość podłoża, items.xml schody/dziury (floorchange). "
+                      "Pole Spawny puste = plik spawnów zapisany w mapie (obok .otbm).")
+        hint.setWordWrap(True)
+        hint.setObjectName("hint")
+        form.addRow(hint)
+        form.addRow("Środek X:", center_x)
+        form.addRow("Środek Y:", center_y)
+        form.addRow("Promień (pola):", radius)
+        form.addRow("Piętra (np. 7,6,8):", floors)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        otbm = fields["otbm"].text().strip()
+        if not os.path.isfile(otbm):
+            QMessageBox.warning(self, "OTBM", f"Brak pliku mapy: {otbm or '(nie wybrano)'}")
+            return
+        try:
+            floor_list = [int(f) for f in floors.text().replace(" ", "").split(",") if f]
+        except ValueError:
+            QMessageBox.warning(self, "OTBM", "Piętra podaj jako liczby oddzielone przecinkami, np. 7,6,8")
+            return
+        if not floor_list:
+            QMessageBox.warning(self, "OTBM", "Podaj co najmniej jedno piętro.")
+            return
+        size = 2 * radius.value() + 1
+        params = {"source": "otbm", "otbm": otbm, "items_otb": fields["items_otb"].text().strip(),
+                  "items_xml": fields["items_xml"].text().strip(), "spawns": fields["spawns"].text().strip(),
+                  "x": center_x.value() - radius.value(), "y": center_y.value() - radius.value(),
+                  "cols": size, "rows": size, "floors": floor_list, "home": floor_list[0]}
+        known = set(self.monster_db.names())
+
+        def work(log):
+            terrain = self._load_terrain(params, log)
+            spawn_path = params["spawns"]
+            if not spawn_path:
+                info, _ = read_otbm_tiles(otbm, window=(0, 0, 0, 0), floors=[])
+                if info.spawn_file:
+                    spawn_path = os.path.join(os.path.dirname(otbm), info.spawn_file)
+            placed, unknown, blocked, note = [], {}, 0, None
+            if spawn_path:
+                try:
+                    spawns = load_spawns(spawn_path)
+                    local = in_window(spawns, params["x"], params["y"], size, size, terrain.layers.keys())
+                    placed, unknown, blocked = place(local, {z: l.walls for z, l in terrain.layers.items()}, known)
+                except SpawnError as exc:
+                    note = str(exc)
+            return terrain, placed, unknown, blocked, note
+
+        def done(result):
+            terrain, placed, unknown, blocked, note = result
+            self.reset_manual(log=False)
+            c = self.canvas
+            c.push_undo()
+            c.waypoints, c.zones = [], []
+            self._apply_terrain(terrain, params, "OTBM: ")
+            c.spawns = {(x, y, z): name for x, y, z, name in placed}
+            c.set_floor(params["home"] if params["home"] in terrain.layers else min(terrain.layers))
+            c.refresh()
+            c.fit_map()
+            self.log("system", f"OTBM: postawiono {len(placed)} spawnów.")
+            self._report_spawn_problems(unknown, blocked)
+            if note:
+                self.log("warn", f"OTBM: spawny niedostępne - {note}")
+
+        self._start_job("Wczytywanie mapy OTBM", work, done)
 
     def _on_floor_changed(self, z):
         self.canvas.set_floor(z)
@@ -2460,6 +3007,9 @@ class MainWindow(QMainWindow):
         self.scenario_label.setText(f"Siatka {c.cols}x{c.rows}   |   piętro {c.floor}   |   "
                                     f"trasa: {len(c.waypoints)}   |   spawny: {len(c.spawns)}   |   "
                                     f"kolizje (piętro): {int(c.grid().sum())}")
+        ox, oy = self.origin_x_input.value(), self.origin_y_input.value()
+        self.floor_hint.setText(f"piętro z={c.floor}" + (f"  •  świat [0,0] = ({ox}, {oy})" if (ox or oy) else ""))
+        self._schedule_preview()
 
     def _update_preview(self):
         druid = Druid(self.level_input.value(), self.magic_input.value())

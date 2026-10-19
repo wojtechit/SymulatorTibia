@@ -11,7 +11,7 @@ stalagmite on it is still drawn as sand, yet nobody can walk there. The pathfind
 Pixel (0, 0) of every floor is world (31744, 30976). `locate` finds where a minimap crop
 (e.g. a screenshot of tibiamaps.io / the in-game minimap, any integer upscale) lies in the
 world, `load_area` builds a TerrainMap for that window with walls, ground speed and stairs.
-Downloaded floors are cached in data/tibiamaps/.
+Downloaded floors are cached in data/cache/tibiamaps/.
 """
 
 import os
@@ -27,7 +27,7 @@ FLOORS = tuple(range(16))
 SEARCH_ORDER = (7, 8, 9, 10, 11, 12, 6, 13, 14, 15, 5, 4, 3, 2, 1, 0)
 URLS = ("https://tibiamaps.github.io/tibia-map-data/floor-{z:02d}-{kind}.png",
         "https://raw.githubusercontent.com/tibiamaps/tibia-map-data/main/data/floor-{z:02d}-{kind}.png")
-CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "tibiamaps")
+CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "cache", "tibiamaps")
 VOID = 0                   # packed black = unexplored on the colour map
 MIN_MATCH = 0.85           # share of explored tiles that must agree for a location to count
 

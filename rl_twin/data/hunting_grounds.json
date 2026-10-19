@@ -1,0 +1,185 @@
+{
+ "format": "rl_twin.hunting_grounds",
+ "version": 1,
+ "_source": "centres: tibiamaps.io markers; extent: Canary global spawns (otservbr-monster.xml); walls: tibiamaps path data",
+ "grounds": [
+  {
+   "name": "Darashia - Dragon Lair (Dragon Lords)",
+   "x": 33188,
+   "y": 32225,
+   "z": 11,
+   "cols": 90,
+   "rows": 95,
+   "floors": [
+    10,
+    11,
+    12
+   ],
+   "monsters": [
+    "Dragon",
+    "Dragon Lord"
+   ]
+  },
+  {
+   "name": "Darashia - Dragons (lvl 40+)",
+   "x": 33193,
+   "y": 32215,
+   "z": 10,
+   "cols": 79,
+   "rows": 80,
+   "floors": [
+    9,
+    10,
+    11
+   ],
+   "monsters": [
+    "Dragon"
+   ]
+  },
+  {
+   "name": "Ankrahmun - Dragon Lair",
+   "x": 33039,
+   "y": 32632,
+   "z": 7,
+   "cols": 48,
+   "rows": 48,
+   "floors": [
+    6,
+    7,
+    8
+   ],
+   "monsters": [
+    "Dragon",
+    "Dragon Lord"
+   ]
+  },
+  {
+   "name": "Ankrahmun - Kha'zeel Dragon Lair (północ)",
+   "x": 32983,
+   "y": 32612,
+   "z": 7,
+   "cols": 102,
+   "rows": 69,
+   "floors": [
+    6,
+    7,
+    8
+   ],
+   "monsters": [
+    "Dragon",
+    "Dragon Lord"
+   ]
+  },
+  {
+   "name": "Goroma - Dragons & Dragon Lords",
+   "x": 31993,
+   "y": 32547,
+   "z": 9,
+   "cols": 110,
+   "rows": 78,
+   "floors": [
+    8,
+    9,
+    10
+   ],
+   "monsters": [
+    "Dragon",
+    "Dragon Lord"
+   ]
+  },
+  {
+   "name": "Edron - Hydra Cave",
+   "x": 33442,
+   "y": 31872,
+   "z": 10,
+   "cols": 81,
+   "rows": 112,
+   "floors": [
+    9,
+    10,
+    11
+   ],
+   "monsters": [
+    "Hydra"
+   ]
+  },
+  {
+   "name": "Port Hope - Giant Spiders",
+   "x": 32904,
+   "y": 32509,
+   "z": 8,
+   "cols": 72,
+   "rows": 60,
+   "floors": [
+    7,
+    8,
+    9
+   ],
+   "monsters": [
+    "Giant Spider"
+   ]
+  },
+  {
+   "name": "Port Hope - Hydras",
+   "x": 32918,
+   "y": 32462,
+   "z": 8,
+   "cols": 75,
+   "rows": 64,
+   "floors": [
+    7,
+    8,
+    9
+   ],
+   "monsters": [
+    "Hydra"
+   ]
+  },
+  {
+   "name": "Edron - Demons (Abandoned Sewers)",
+   "x": 33477,
+   "y": 31974,
+   "z": 10,
+   "cols": 48,
+   "rows": 61,
+   "floors": [
+    10,
+    11
+   ],
+   "monsters": [
+    "Demon"
+   ]
+  },
+  {
+   "name": "Mintwallin - Minotaurs",
+   "x": 31975,
+   "y": 31810,
+   "z": 10,
+   "cols": 48,
+   "rows": 65,
+   "floors": [
+    9,
+    10
+   ],
+   "monsters": [
+    "Minotaur"
+   ]
+  },
+  {
+   "name": "Edron - Dragons",
+   "x": 33046,
+   "y": 31628,
+   "z": 8,
+   "cols": 64,
+   "rows": 69,
+   "floors": [
+    7,
+    8,
+    9
+   ],
+   "monsters": [
+    "Dragon"
+   ]
+  }
+ ]
+}

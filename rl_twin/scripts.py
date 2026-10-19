@@ -31,16 +31,20 @@ def waypoint_types(waypoints, transitions):
     return types
 
 
-def export_script(path, waypoints, zones=(), transitions=(), origin=(0, 0), name="trasa"):
+def text_script(waypoints, transitions=(), origin=(0, 0), name="trasa"):
+    """Cavebot text: one 'Type (x, y, z)' line per waypoint in world coordinates."""
     ox, oy = origin
     types = waypoint_types(waypoints, transitions)
-    if str(path).lower().endswith(".txt"):
-        lines = [f"# {name} - rl_twin, współrzędne świata (origin {ox}, {oy})"]
-        lines += [f"{TEXT_TYPES[t]} ({x + ox}, {y + oy}, {z})" for (x, y, z), t in zip(waypoints, types)]
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write("\n".join(lines) + "\n")
-        return len(waypoints)
-    data = {
+    lines = [f"# {name} - rl_twin, współrzędne świata (origin {ox}, {oy})"]
+    lines += [f"{TEXT_TYPES[t]} ({x + ox}, {y + oy}, {z})" for (x, y, z), t in zip(waypoints, types)]
+    return "\n".join(lines) + "\n"
+
+
+def json_script(waypoints, zones=(), transitions=(), origin=(0, 0), name="trasa"):
+    """rl_twin.script dict: typed waypoints and tactical zones in world coordinates."""
+    ox, oy = origin
+    types = waypoint_types(waypoints, transitions)
+    return {
         "format": FORMAT,
         "version": VERSION,
         "name": name,
@@ -48,8 +52,15 @@ def export_script(path, waypoints, zones=(), transitions=(), origin=(0, 0), name
         "waypoints": [{"type": t, "x": x + ox, "y": y + oy, "z": z} for (x, y, z), t in zip(waypoints, types)],
         "zones": [dict(zone, x=zone["x"] + ox, y=zone["y"] + oy) for zone in zones],
     }
+
+
+def export_script(path, waypoints, zones=(), transitions=(), origin=(0, 0), name="trasa"):
+    if str(path).lower().endswith(".txt"):
+        text = text_script(waypoints, transitions, origin, name)
+    else:
+        text = json.dumps(json_script(waypoints, zones, transitions, origin, name), ensure_ascii=False, indent=2)
     with open(path, "w", encoding="utf-8") as handle:
-        json.dump(data, handle, ensure_ascii=False, indent=2)
+        handle.write(text)
     return len(waypoints)
 
 

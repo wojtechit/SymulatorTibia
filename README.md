@@ -112,6 +112,61 @@ Nagrody: `lure_bonus` za każdy potwór doprowadzony do walki, `aoe_missed` za p
 
 Skrypty (`rl_twin/scripts.py`, „Eksport/Import skryptu”): `.json` (trasa z typami + strefy) albo `.txt` z liniami `Node (x, y, z)` / `Ladder` / `Hole` we współrzędnych świata (`Świat X/Y pola [0,0]`, ustawiane automatycznie z minimapy klienta). Import przyjmuje każdą linię z trzema liczbami.
 
+## Faza 8: edytor all-in-one, mapa świata i natywne spawny
+
+**Łowiska z listy.** Wybierasz łowisko z listy i klikasz **Wczytaj**. Symulator pobiera
+prawdziwy wycinek mapy świata: ściany z pathfindingu Tibii, prędkość podłoża, schody i
+piętra wyżej/niżej. Do tego stawia potwory z globalnej bazy spawnów Canary dokładnie na ich
+współrzędnych [x, y, z]. Lista jest w `rl_twin/data/hunting_grounds.json`. Środki łowisk
+pochodzą ze znaczników tibiamaps.io, a zasięg z rozkładu spawnów. Wpisy można dopisywać
+ręcznie.
+
+**Źródła mapy:**
+
+| Źródło | Co daje | Moduł |
+|---|---|---|
+| Łowisko z listy / „Prawdziwe kolizje (tibiamaps)” | ściany, prędkość podłoża, schody, sąsiednie piętra, współrzędne świata | `tibiamaps.py`, `hunting.py` |
+| Minimapa klienta (`Minimap_Color/WaypointCost_X_Y_Z.png`) | jak wyżej, z plików Twojego klienta | `terrain.py` |
+| Mapa OTBM (OTServ / RME) + items.otb + items.xml | ściany (BLOCK_SOLID), prędkość podłoża, kolory minimapy, schody (floorchange), plik spawnów mapy | `otbm.py` |
+| PNG minimapy | ściany z kolorów (przybliżenie) | `mapparser.py` |
+
+**Spawny.** Obsługiwane formaty:
+- XML w formacie TFS (`<spawns><spawn>`);
+- XML w formacie Canary (`<monsters><monster centerx…>`);
+- JSON (`[{name, x, y, z}]`).
+
+Baza Canary jest pobierana raz do `data/cache/spawns/`. Potwory spoza
+`rl_twin/data/monsters.json` są pomijane z ostrzeżeniem, które wymienia ich nazwy. Spawn
+leżący na ścianie przesuwam na najbliższe wolne pole w promieniu 2.
+
+**Wczytywanie w tle.** Każdy loader (łowisko, tibiamaps, minimapa klienta, OTBM, spawny,
+teren projektu) działa w wątku `BackgroundJob`. GUI nie zamarza, a pasek w stopce pokazuje
+postęp.
+
+**Edytor:**
+- mapa w centrum;
+- doki: *Panel edytora*, *Podgląd skryptu (na żywo)*, *Dziennik*. Można je zwijać,
+  przenosić i odpinać (menu Widok);
+- warstwy jako przełączniki nad mapą i w menu Warstwy: Ściany, Spawny, Trasa, Strefy,
+  Heatmapa. Heatmapa pokazuje, gdzie druid spędzał czas, w kolorach od fioletu do cyjanu;
+- podgląd skryptu odświeża się po każdym kliknięciu. Formaty: `rl_twin.script` JSON,
+  cavebot TXT albo pełny projekt;
+- Widok → *Tryb streamera* powiększa czcionki.
+
+**Projekt (Plik → Zapisz/Wczytaj projekt, Ctrl+S / Ctrl+O).** Jeden plik
+`rl_twin.project` zawiera mapę, źródło terenu, trasę, spawny, strefy, taktykę, nagrody i
+skrypt w współrzędnych świata. Zapis jest atomowy. Odczyt waliduje wszystko:
+- uszkodzone wiersze kolizji i prędkości są naprawiane albo pomijane;
+- trasa, spawny i strefy spoza mapy oraz nieznane potwory są pomijane;
+- każdy problem trafia do listy ostrzeżeń w oknie i w dzienniku.
+
+Tylko plik, który w ogóle nie jest projektem, daje błąd. Uszkodzony OTBM, items.otb albo
+XML spawnów kończy się czytelnym komunikatem, a obecna mapa zostaje bez zmian.
+
+Trening bez okna działa bez zmian na zapisanym projekcie:
+`python -m rl_twin.trainer projekt.json --episodes 3000`. Obserwacja (305 cech) i akcje (15)
+są takie same jak wcześniej, więc wytrenowane modele i `brainstem.py` działają dalej.
+
 ## Prawdziwe kolizje (tibiamaps) i walka na regułach
 
 Kolor minimapy mówi tylko, jak wygląda podłoga. Piasek z kamieniem, czaszką albo stalagmitem
@@ -126,7 +181,7 @@ to ok. 9% piasku i 12% bruku. Przycisk **Prawdziwe kolizje (tibiamaps)**:
    i przenosi trasę, spawny i strefy na prawdziwe piętro. Ostrzega o punktach trasy na
    zablokowanych polach.
 
-Pliki pięter są pobierane raz do `data/tibiamaps/`.
+Pliki pięter są pobierane raz do `data/cache/tibiamaps/`.
 
 Trasa na mapie jest rysowana po polach, którymi druid naprawdę pójdzie (najkrótsza droga wokół
 ścian). Czerwona przerywana linia oznacza brak przejścia między punktami.
