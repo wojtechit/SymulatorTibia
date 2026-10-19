@@ -9,19 +9,23 @@ import os
 import sys
 
 import numpy as np
-from PyQt5.QtCore import QEvent, QPoint, Qt, QThread, QTimer, pyqtSignal
-from PyQt5.QtGui import QBrush, QColor, QFont, QIcon, QImage, QPainter, QPainterPath, QPalette, QPen, QPixmap
+from PyQt5.QtCore import QEvent, QPoint, QPointF, Qt, QThread, QTimer, pyqtSignal
+from PyQt5.QtGui import (QBrush, QColor, QFont, QIcon, QImage, QPainter, QPainterPath, QPalette, QPen, QPixmap,
+                         QPolygonF)
 from PyQt5.QtWidgets import (
     QApplication,
     QButtonGroup,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QGraphicsEllipseItem,
     QGraphicsLineItem,
     QGraphicsPixmapItem,
+    QGraphicsPolygonItem,
     QGraphicsRectItem,
     QGraphicsScene,
     QGraphicsSimpleTextItem,
@@ -30,6 +34,7 @@ from PyQt5.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -63,6 +68,7 @@ from .env import (
     ACTION_UP,
     ACTION_UP_LEFT,
     ACTION_UP_RIGHT,
+    ACTION_USE_AVALANCHE,
     ACTION_USE_SD,
     ACTION_WAIT,
     STRIKE_RANGE,
@@ -70,7 +76,8 @@ from .env import (
     EnvConfig,
     grid_to_rows,
 )
-from .mapparser import DEFAULT_WALL_COLORS, MapParser, color_label, load_rgba, palette
+from .mapparser import DEFAULT_WALL_COLORS, MapParser, color_label, load_rgba, mask_to_cells, palette
+from .terrain import encode_speed, load_client_minimap, stairs_mask
 from .items import ItemDatabase
 from .monsters import MonsterDatabase
 from .observation import ACTION_LABELS_PL
@@ -211,17 +218,23 @@ class GridCanvas(QGraphicsView):
         self.tool = TOOL_WAYPOINT
         self.monster_type = None
         self.editing_enabled = True
-        self.map_path = None
-        self.map_cell_px = CELL
-        self.map_floor = None        # floor the background image (and its parsed walls) belongs to
-        self.map_offset = (0, 0)
+        self.floor_maps = {}         # z -> {"path", "cell_px", "offset", "client"} background per floor
+        self.speeds = {}             # z -> uint16 ground speed per tile (client minimap import)
+        self.stairs = {}             # z -> bool floor-change tiles (yellow on the minimap)
+        self.transitions = []        # [[x, y, z, x2, y2, z2], ...] linked stairs / holes / ladders
+        self.replaced_floors = []    # floors dropped by the last load_map (different map size)
         self.sprites = None          # SpriteStore, set by the main window
 
         self.collision = {}          # z -> np.ndarray (rows, cols) uint8
         self.waypoints = []          # [(x, y, z)]
         self.spawns = {}             # (x, y, z) -> monster name
-        self._map_item = None
+        self._floor_items = {}       # z -> QGraphicsPixmapItem
+        self._transition_items = []
         self._overlay_item = None
+        self._undo, self._redo = [], []
+        self.floor_label = QLabel(self)
+        self.floor_label.setStyleSheet("background: rgba(0,0,0,170); color: #ffffff; padding: 3px 8px; "
+                                       "border-radius: 4px; font-weight: bold;")
         self._overlay_buffer = None
         self._waypoint_items = []
         self._spawn_items = {}
@@ -238,6 +251,7 @@ class GridCanvas(QGraphicsView):
 
         self._scene.setSceneRect(0, 0, self.cols * CELL, self.rows * CELL)
         self._render_overlay()
+        self._update_floor_label()
 
     # ----- grid & floors --------------------------------------------------- #
 
@@ -253,50 +267,163 @@ class GridCanvas(QGraphicsView):
             h, w = min(rows, grid.shape[0]), min(cols, grid.shape[1])
             resized[:h, :w] = grid[:h, :w]
             self.collision[z] = resized
+        for layers, fill, dtype in ((self.speeds, DEFAULT_GROUND_SPEED, np.uint16), (self.stairs, False, bool)):
+            for z, layer in list(layers.items()):
+                resized = np.full((rows, cols), fill, dtype=dtype)
+                h, w = min(rows, layer.shape[0]), min(cols, layer.shape[1])
+                resized[:h, :w] = layer[:h, :w]
+                layers[z] = resized
         self.cols, self.rows = cols, rows
         self._scene.setSceneRect(0, 0, cols * CELL, rows * CELL)
+        self.transitions = [t for t in self.transitions if self._in_bounds(t[0], t[1]) and self._in_bounds(t[3], t[4])]
         self.waypoints = [w for w in self.waypoints if self._in_bounds(w[0], w[1])]
         for key in [k for k in self.spawns if not self._in_bounds(k[0], k[1])]:
             del self.spawns[key]
         self.refresh()
 
+    # Current floor's background (None when this floor has no map)
+    @property
+    def map_path(self):
+        return self.floor_maps.get(self.floor, {}).get("path")
+
+    @property
+    def map_floor(self):
+        return self.floor if self.floor in self.floor_maps else None
+
+    @property
+    def map_cell_px(self):
+        return self.floor_maps.get(self.floor, {}).get("cell_px", CELL)
+
+    @property
+    def map_offset(self):
+        return tuple(self.floor_maps.get(self.floor, {}).get("offset", (0, 0)))
+
     def set_floor(self, z):
         self.floor = int(z)
-        if self._map_item is not None:
-            self._map_item.setVisible(self.map_floor is None or self.map_floor == self.floor)
+        for floor, item in self._floor_items.items():
+            item.setVisible(floor == self.floor)
+        self._update_floor_label()
         self.refresh()
+
+    def _update_floor_label(self):
+        """Tibia floors: 7 = ground, 0-6 above, 8-15 = -1..-8 underground."""
+        level = GROUND_FLOOR - self.floor
+        where = "parter" if level == 0 else ("nad ziemią" if level > 0 else "pod ziemią")
+        loaded = " • mapa" if self.floor in self.floor_maps else ""
+        self.floor_label.setText(f"piętro {level:+d} (z={self.floor}, {where}){loaded}   PgUp/PgDn")
+        self.floor_label.adjustSize()
+        self.floor_label.move(8, self.height() - self.floor_label.height() - 8)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_floor_label()
+
+    # ----- undo / redo (Ctrl+Z / Ctrl+Y) ----------------------------------- #
+
+    def _snapshot(self):
+        return ({z: g.copy() for z, g in self.collision.items()}, list(self.waypoints), dict(self.spawns),
+                {z: m.copy() for z, m in self.stairs.items()}, [list(t) for t in self.transitions])
+
+    def _restore(self, state):
+        self.collision, self.waypoints, self.spawns, self.stairs, self.transitions = state
+        self.refresh()
+
+    def push_undo(self):
+        self._undo.append(self._snapshot())
+        del self._undo[:-50]
+        self._redo.clear()
+
+    def undo(self):
+        if self._undo:
+            self._redo.append(self._snapshot())
+            self._restore(self._undo.pop())
+
+    def redo(self):
+        if self._redo:
+            self._undo.append(self._snapshot())
+            self._restore(self._redo.pop())
 
     def refresh(self):
         self._render_overlay()
         self._redraw_spawns()
         self._redraw_waypoints()
+        self._redraw_transitions()
         self.scenario_changed.emit()
+
+    def _set_floor_item(self, z, pixmap, scale, pos):
+        old = self._floor_items.pop(z, None)
+        if old is not None:
+            self._scene.removeItem(old)
+        item = QGraphicsPixmapItem(pixmap)
+        item.setZValue(-10)
+        item.setTransformationMode(Qt.FastTransformation)   # crisp pixel-art minimaps
+        item.setScale(scale)
+        item.setPos(*pos)
+        item.setVisible(z == self.floor)
+        self._scene.addItem(item)
+        self._floor_items[z] = item
+
+    def clear_floor_maps(self):
+        for item in self._floor_items.values():
+            self._scene.removeItem(item)
+        self._floor_items = {}
+        self.floor_maps = {}
+
+    def set_stairs(self, z, mask):
+        """Floor-change tiles of a floor; stairs are walkable. Re-links transitions across floors."""
+        self.stairs[int(z)] = mask.astype(bool)
+        self.relink_transitions()
+
+    def relink_transitions(self):
+        from .terrain import TerrainLayer, link_transitions
+        layers = {z: TerrainLayer(self.grid(z), stairs=mask) for z, mask in self.stairs.items()
+                  if mask.shape == (self.rows, self.cols)}
+        self.transitions = link_transitions(layers)
+        self.refresh()
+
+    def _redraw_transitions(self):
+        for item in self._transition_items:
+            self._scene.removeItem(item)
+        self._transition_items = []
+        for x, y, z, _x2, _y2, z2 in self.transitions:
+            if z != self.floor:
+                continue
+            down = z2 > z
+            points = [QPoint(-7, -5), QPoint(7, -5), QPoint(0, 7)] if down else [QPoint(-7, 5), QPoint(7, 5), QPoint(0, -7)]
+            item = QGraphicsPolygonItem(QPolygonF([QPointF(p) for p in points]))
+            item.setFlag(QGraphicsPolygonItem.ItemIgnoresTransformations)
+            item.setPos(x * CELL + CELL / 2, y * CELL + CELL / 2)
+            item.setBrush(QBrush(QColor("#ffeb3b")))
+            item.setPen(QPen(QColor("#000000"), 1.5))
+            item.setZValue(9)
+            item.setToolTip(f"{'Zejście' if down else 'Wejście'} na piętro {z2} ({_x2}, {_y2})")
+            self._scene.addItem(item)
+            self._transition_items.append(item)
 
     def load_map(self, path, cell_px, grid=None, offset=(0, 0), fit=True):
         """
         Show the image as background of the current floor; `grid` (parsed walls) replaces that floor's
         collision. `offset` is the pixel where the tile grid starts (detected for upscaled minimaps).
         """
-        if self._map_item is not None:
-            self._scene.removeItem(self._map_item)
-            self._map_item = None
-        self.map_path = None
         pixmap = QPixmap(path) if path else QPixmap()
         if pixmap.isNull():
             return None
-        self.map_path = path
-        self.map_cell_px = cell_px
         scale = CELL / cell_px
         offset_x, offset_y = offset
-        self._map_item = QGraphicsPixmapItem(pixmap)
-        self._map_item.setZValue(-10)
-        self._map_item.setTransformationMode(Qt.FastTransformation)   # crisp pixel-art minimaps
-        self._map_item.setScale(scale)
-        self._map_item.setPos(-offset_x * scale, -offset_y * scale)
-        self._scene.addItem(self._map_item)
-        self.map_floor = self.floor
-        self.map_offset = (offset_x, offset_y)
-        self.resize_grid(max(1, (pixmap.width() - offset_x) // cell_px), max(1, (pixmap.height() - offset_y) // cell_px))
+        cols = max(1, (pixmap.width() - offset_x) // cell_px)
+        rows = max(1, (pixmap.height() - offset_y) // cell_px)
+        others = [z for z in self.floor_maps if z != self.floor]
+        self.replaced_floors = []
+        if others and (cols, rows) != (self.cols, self.rows):
+            # A map of a different area starts a new project: other floors cannot line up with it
+            self.replaced_floors = sorted(others)
+            self.clear_floor_maps()
+            self.collision, self.speeds, self.stairs, self.transitions = {}, {}, {}, []
+            self.waypoints, self.spawns = [], {}
+        self._set_floor_item(self.floor, pixmap, scale, (-offset_x * scale, -offset_y * scale))
+        self.floor_maps[self.floor] = {"path": path, "cell_px": cell_px, "offset": [offset_x, offset_y],
+                                       "client": False}
+        self.resize_grid(cols, rows)
         if grid is not None:
             if grid.shape != (self.rows, self.cols):
                 raise ValueError(f"Parsed grid {grid.shape} does not match the map {self.rows}x{self.cols}")
@@ -330,6 +457,9 @@ class GridCanvas(QGraphicsView):
         grid = self.grid()
         rgba = np.zeros((self.rows, self.cols, 4), dtype=np.uint8)
         rgba[grid > 0] = (150, 40, 40, 150)
+        speed = self.speeds.get(self.floor)
+        if speed is not None and speed.shape == grid.shape:
+            rgba[(speed > DEFAULT_GROUND_SPEED) & (grid == 0)] = (60, 120, 255, 70)   # slow ground (mud, swamp)
         self._overlay_buffer = np.ascontiguousarray(rgba)
         image = QImage(self._overlay_buffer.data, self.cols, self.rows, self.cols * 4, QImage.Format_RGBA8888)
         if self._overlay_item is None:
@@ -532,10 +662,33 @@ class GridCanvas(QGraphicsView):
     def collision_rows(self):
         return {str(z): grid_to_rows(g) for z, g in sorted(self.collision.items()) if g.any()}
 
+    def apply_terrain(self, terrain):
+        """Install a client-minimap TerrainMap: walls, ground speed, stairs, floor images and transitions."""
+        self.clear_floor_maps()
+        first = next(iter(terrain.layers.values()))
+        rows, cols = first.walls.shape
+        self.collision, self.speeds, self.stairs = {}, {}, {}
+        self.resize_grid(cols, rows)
+        for z, layer in terrain.layers.items():
+            self.collision[z] = layer.walls.astype(np.uint8)
+            self.speeds[z] = layer.speed
+            self.stairs[z] = layer.stairs
+            image = layer.image if layer.image is not None else np.dstack(
+                [np.where(layer.walls, 40, 200).astype(np.uint8)] * 3 + [np.full(layer.walls.shape, 255, np.uint8)])
+            buffer = np.ascontiguousarray(image)
+            qimage = QImage(buffer.data, cols, rows, cols * 4, QImage.Format_RGBA8888).copy()
+            self._set_floor_item(z, QPixmap.fromImage(qimage), CELL, (0, 0))
+            self.floor_maps[z] = {"path": None, "cell_px": 1, "offset": [0, 0], "client": True}
+        self.transitions = [list(t) for t in terrain.transitions]
+        self.refresh()
+        self.fit_map()
+
     def apply_config(self, config):
         self.cols, self.rows = config.cols, config.rows
         self._scene.setSceneRect(0, 0, self.cols * CELL, self.rows * CELL)
         self.collision = {int(z): config.collision_grid(int(z)) for z in config.collision}
+        self.speeds = {int(z): config.speed_grid(int(z)) for z in config.terrain_speed}
+        self.transitions = [list(t) for t in config.transitions]
         self.waypoints = [tuple(int(v) for v in w[:3]) for w in config.waypoints]
         self.spawns = {(int(x), int(y), int(z)): name for x, y, z, name in config.spawns}
         self.refresh()
@@ -711,6 +864,7 @@ class GridCanvas(QGraphicsView):
                 self.edit_blocked.emit()
                 return
             self._paint_button = button
+            self.push_undo()                          # one undo step per click / drag
             cell = self.cell_at(event.pos())
             marker = self.marker_at(event.pos())
             if button == Qt.RightButton and marker is not None:
@@ -916,6 +1070,7 @@ class MainWindow(QMainWindow):
         self.item_db = ItemDatabase.load()
         self.wall_colors = set(DEFAULT_WALL_COLORS)
         self._map_rgba = None
+        self._client_minimap = None
         self.monsters_file = None
         self.asset_manager = AssetManager(SPRITES_DIR, log=print)
         self.sprite_store = SpriteStore(self.asset_manager)
@@ -969,8 +1124,8 @@ class MainWindow(QMainWindow):
         self.canvas.cell_hovered.connect(
             lambda x, y: self.cell_label.setText(f"Pole: ({x}, {y}, {self.canvas.floor})"))
         left_layout.addWidget(self.canvas, 1)
-        hint = QLabel("LPM: narzędzie (Przesuń: chwyć spawn/punkt i upuść)   |   PPM na znaczniku: usuń, "
-                      "PPM na polu: wymaż   |   ŚPM: przesuwanie widoku   |   Kółko: zoom")
+        hint = QLabel("LPM: narzędzie (Przesuń: chwyć i upuść)  |  PPM na znaczniku: usuń  |  ŚPM: widok  |  "
+                      "Kółko: zoom  |  PgUp/PgDn: piętro  |  Ctrl+Z / Ctrl+Y: cofnij / ponów  |  Delete: ostatni punkt")
         hint.setObjectName("hint")
         hint.setAlignment(Qt.AlignCenter)
         left_layout.addWidget(hint)
@@ -1033,18 +1188,27 @@ class MainWindow(QMainWindow):
         self.sd_input = self._spin(0, 10_000, 100)
         self.sd_input.setToolTip("Liczba run Sudden Death w plecaku (0 = brak amunicji)")
         self.sd_input.valueChanged.connect(lambda *_: self._update_preview())
+        self.avalanche_input = self._spin(0, 10_000, 100)
+        self.avalanche_input.setToolTip("Liczba run Avalanche (lodowa kula 37 pól)")
+        self.avalanche_input.valueChanged.connect(lambda *_: self._update_preview())
+        self.exp_rate_input = QDoubleSpinBox()
+        self.exp_rate_input.setRange(0.1, 20.0)
+        self.exp_rate_input.setSingleStep(0.1)
+        self.exp_rate_input.setValue(1.0)
+        self.exp_rate_input.setToolTip("Mnożnik expa serwera (stage, boost, double exp)")
         self.preview_label = QLabel()
         self.preview_label.setStyleSheet("color: #9ccc65;")
         self.preview_label.setWordWrap(True)
         fields = [("Poziom:", self.level_input), ("Poziom magii:", self.magic_input),
                   ("Pancerz (eq):", self.armor_input), ("Great Mana Potion:", self.potions_input),
                   ("Limit decyzji:", self.max_steps_input), ("", self.utamo_checkbox),
-                  ("Różdżka:", self.rod_combo), ("Runy SD:", self.sd_input)]
+                  ("Różdżka:", self.rod_combo), ("Runy SD:", self.sd_input),
+                  ("Runy Avalanche:", self.avalanche_input), ("Mnożnik expa:", self.exp_rate_input)]
         for i, (text, widget) in enumerate(fields):
             row, col = divmod(i, 2)
             grid.addWidget(QLabel(text), row, col * 2)
             grid.addWidget(widget, row, col * 2 + 1)
-        grid.addWidget(self.preview_label, 4, 0, 1, 4)
+        grid.addWidget(self.preview_label, 5, 0, 1, 4)
         return group
 
     def _build_editor_group(self):
@@ -1123,6 +1287,10 @@ class MainWindow(QMainWindow):
         self.load_db_button.clicked.connect(self.load_monster_db)
         self.clear_spawns_button = QPushButton("Usuń potwory (piętro)")
         self.clear_spawns_button.clicked.connect(self._clear_spawns)
+        self.client_map_button = QPushButton("Minimapa klienta…")
+        self.client_map_button.setToolTip("Import folderu minimapy klienta Tibii (Minimap_Color / WaypointCost): "
+                                          "ściany, koszt pól i schody między piętrami")
+        self.client_map_button.clicked.connect(self.import_client_minimap)
         self.sprites_button = QPushButton("Pobierz grafiki ponownie")
         self.sprites_button.clicked.connect(lambda *_: self.sync_sprites(force=True))
         self.save_scenario_button = QPushButton("Zapisz scenariusz")
@@ -1130,7 +1298,7 @@ class MainWindow(QMainWindow):
         self.load_scenario_button = QPushButton("Wczytaj scenariusz")
         self.load_scenario_button.clicked.connect(self.load_scenario)
         for i, button in enumerate((self.load_map_button, self.reparse_button, self.clear_map_button,
-                                    self.clear_spawns_button, self.sprites_button,
+                                    self.clear_spawns_button, self.client_map_button, self.sprites_button,
                                     self.load_db_button, self.save_scenario_button, self.load_scenario_button)):
             buttons.addWidget(button, i // 2, i % 2)
         layout.addLayout(buttons)
@@ -1176,7 +1344,7 @@ class MainWindow(QMainWindow):
         row.addWidget(self.speed_combo)
         layout.addLayout(row)
         keys = QLabel("Klawisze: W/A/S/D lub strzałki - ruch, Q/E/Z/C - ukosy, 1 - Exori Frigo, "
-                      "2 - Exori Tera, 3 - Exura Gran, 4 - mikstura many, 5 - runa SD")
+                      "2 - Exori Tera, 3 - Exura Gran, 4 - mikstura many, 5 - runa SD, 6 - Avalanche")
         keys.setObjectName("hint")
         keys.setWordWrap(True)
         layout.addWidget(keys)
@@ -1205,7 +1373,11 @@ class MainWindow(QMainWindow):
             ("time", "Czas gry:"), ("reward", "Nagroda epizodu:"),
             ("kills", "Zabite:"), ("last_reward", "Ostatnia nagroda:"),
             ("utamo", "Utamo Vita:"), ("action", "Ostatnia akcja:"),
-            ("rod", "Różdżka:"), ("sd", "Runy SD:"),
+            ("rod", "Różdżka:"), ("sd", "Runy SD / Avalanche:"),
+            ("exp_h", "Exp/h:"), ("profit_h", "Zysk/h:"),
+            ("loot", "Loot / zapasy:"), ("profit", "Bilans (gp):"),
+            ("hp_min", "HP min:"), ("adjacent", "Obok potwora:"),
+            ("pots_h", "Mikstury/h:"), ("runes_h", "Runy/h:"),
         ])
         return page
 
@@ -1237,6 +1409,7 @@ class MainWindow(QMainWindow):
             ("avg_kills", "Śr. zabicia (100):"), ("death_rate", "Zgony (100):"),
             ("epsilon", "Epsilon:"), ("speed", "Decyzje/s:"),
             ("loss", "Strata (Huber):"), ("steps", "Decyzje łącznie:"),
+            ("exp_h", "Śr. exp/h (100):"), ("profit_h", "Śr. zysk/h (100):"),
         ])
         self.reward_plot = RewardPlot()
         layout.addWidget(self.reward_plot)
@@ -1306,15 +1479,36 @@ class MainWindow(QMainWindow):
             Qt.Key_Q: ACTION_UP_LEFT, Qt.Key_E: ACTION_UP_RIGHT,
             Qt.Key_Z: ACTION_DOWN_LEFT, Qt.Key_C: ACTION_DOWN_RIGHT,
             Qt.Key_1: ACTION_EXORI_FRIGO, Qt.Key_2: ACTION_EXORI_TERA,
-            Qt.Key_3: ACTION_HEAL, Qt.Key_4: ACTION_MANA_POTION, Qt.Key_5: ACTION_USE_SD,
+            Qt.Key_3: ACTION_HEAL, Qt.Key_4: ACTION_MANA_POTION, Qt.Key_5: ACTION_USE_SD, Qt.Key_6: ACTION_USE_AVALANCHE,
         }
         QApplication.instance().installEventFilter(self)
 
     def eventFilter(self, obj, event):
-        if (event.type() == QEvent.KeyPress and self.manual_running
-                and not self.agent_control_checkbox.isChecked()
+        if event.type() != QEvent.KeyPress:
+            return super().eventFilter(obj, event)
+        if (self.manual_running and not self.agent_control_checkbox.isChecked()
                 and event.key() in self.key_actions):
             self.pending_action = self.key_actions[event.key()]
+            return True
+        # Map editor shortcuts (like a cavebot): only when no text field has focus
+        focus = QApplication.focusWidget()
+        typing = isinstance(focus, (QLineEdit, QSpinBox, QDoubleSpinBox))
+        if event.key() in (Qt.Key_PageUp, Qt.Key_PageDown) and not self.training:
+            self.floor_input.setValue(self.floor_input.value() + (-1 if event.key() == Qt.Key_PageUp else 1))
+            return True
+        if typing or not self.canvas.editing_enabled:
+            return super().eventFilter(obj, event)
+        ctrl = event.modifiers() & Qt.ControlModifier
+        if ctrl and event.key() == Qt.Key_Z:
+            self.canvas.undo()
+            return True
+        if ctrl and event.key() == Qt.Key_Y:
+            self.canvas.redo()
+            return True
+        if event.key() == Qt.Key_Delete and self.canvas.waypoints:
+            self.canvas.push_undo()
+            self.canvas.waypoints.pop()
+            self.canvas.refresh()
             return True
         return super().eventFilter(obj, event)
 
@@ -1349,7 +1543,8 @@ class MainWindow(QMainWindow):
         self.canvas.editing_enabled = editable
         for widget in (self.level_input, self.magic_input, self.armor_input, self.potions_input,
                        self.max_steps_input, self.utamo_checkbox, self.random_monsters_input,
-                       self.rod_combo, self.sd_input,
+                       self.rod_combo, self.sd_input, self.avalanche_input, self.exp_rate_input,
+                       self.client_map_button,
                        self.cell_px_input, self.tolerance_input, self.fraction_input,
                        self.diagonal_input, self.ground_speed_input,
                        self.load_map_button, self.reparse_button, self.clear_map_button,
@@ -1398,6 +1593,11 @@ class MainWindow(QMainWindow):
             monsters_file=self.monsters_file,
             rod=self.rod_combo.currentData(),
             sd_runes=self.sd_input.value(),
+            avalanche_runes=self.avalanche_input.value(),
+            exp_rate=self.exp_rate_input.value(),
+            terrain_speed={str(z): encode_speed(sp) for z, sp in canvas.speeds.items()
+                           if sp.shape == (canvas.rows, canvas.cols) and (sp != DEFAULT_GROUND_SPEED).any()},
+            transitions=[list(t) for t in canvas.transitions],
         )
 
     # ----- manual / visual mode -------------------------------------------- #
@@ -1515,7 +1715,15 @@ class MainWindow(QMainWindow):
         else:
             ready = druid.auto_attack_remaining_ms(env.time_ms)
             v["rod"].setText(f"{druid.rod.name} ({'gotowa' if ready == 0 else f'{ready / 1000:.1f} s'})")
-        v["sd"].setText(str(druid.sd_runes))
+        v["sd"].setText(f"{druid.sd_runes} / {druid.avalanche_runes}")
+        v["exp_h"].setText(f"{info['exp_per_hour']:,}".replace(",", " "))
+        v["profit_h"].setText(f"{info['profit_per_hour']:,}".replace(",", " "))
+        v["loot"].setText(f"{info['loot']:,} / {info['supply_cost']:,}".replace(",", " "))
+        v["profit"].setText(f"{info['profit']:,}".replace(",", " "))
+        v["hp_min"].setText(f"{info['hp_min_pct']:.0f}%")
+        v["adjacent"].setText(f"{info['adjacent_pct']:.1f}%")
+        v["pots_h"].setText(str(info["potions_per_hour"]))
+        v["runes_h"].setText(str(info["runes_per_hour"]))
 
     def _log_env_events(self):
         if self.env is None:
@@ -1565,6 +1773,8 @@ class MainWindow(QMainWindow):
         v["speed"].setText(f"{stats['steps_per_second']:.0f}")
         v["loss"].setText(f"{stats['loss']:.4f}")
         v["steps"].setText(f"{stats['total_steps']:,}".replace(",", " "))
+        v["exp_h"].setText(f"{stats['avg_exp_per_hour']:,.0f}".replace(",", " "))
+        v["profit_h"].setText(f"{stats['avg_profit_per_hour']:,.0f}".replace(",", " "))
         self.reward_plot.add(stats["new_rewards"])
         self._update_model_label()
 
@@ -1636,8 +1846,19 @@ class MainWindow(QMainWindow):
         if loaded is None:
             self.log("warn", f"Qt nie potrafi wyświetlić obrazu {name}.")
             return False
+        if self.canvas.replaced_floors:
+            self.log("warn", f"Mapa {name} ma inny rozmiar niż piętra {self.canvas.replaced_floors} - "
+                             f"usunięto je razem z trasą i spawnami (nowy projekt mapy).")
+            self._client_minimap = None
         self._map_rgba = rgba
         self._populate_palette(rgba)
+        stairs = mask_to_cells(stairs_mask(rgba), parser.last_cell_px, parser.last_offset, 0.3)
+        if stairs.shape == (self.canvas.rows, self.canvas.cols):
+            self.canvas.set_stairs(self.canvas.floor, stairs)
+            if stairs.any():
+                self.log("system", f"Schody/dziury na piętrze {self.canvas.floor}: {int(stairs.sum())} pól, "
+                                   f"połączone przejścia: {len(self.canvas.transitions)} (wczytaj sąsiednie piętro, "
+                                   f"aby je połączyć).")
         if parser.last_was_minimap:
             kind = f"minimapa ({parser.last_cell_px}x{parser.last_cell_px} px = 1 pole, start siatki {parser.last_offset})"
         else:
@@ -1718,10 +1939,8 @@ class MainWindow(QMainWindow):
         if not path:
             return
         data = self.build_config().to_dict()
-        data["map_image"] = self.canvas.map_path
-        data["map_cell_px"] = self.canvas.map_cell_px
-        data["map_floor"] = self.canvas.map_floor
-        data["map_offset"] = list(self.canvas.map_offset)
+        data["floor_maps"] = {str(z): entry for z, entry in self.canvas.floor_maps.items()}
+        data["client_minimap"] = self._client_minimap
         data["map_wall_colors"] = [list(c) for c in sorted(self.wall_colors)]
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(data, handle, ensure_ascii=False, indent=2)
@@ -1742,27 +1961,47 @@ class MainWindow(QMainWindow):
         self.monster_db, self.monsters_file = db, config.monsters_file
         self._populate_monsters()
         self.sync_sprites()
-        map_image = data.get("map_image")
-        map_floor = int(data.get("map_floor") if data.get("map_floor") is not None else config.floor)
-        self.floor_input.setValue(map_floor)
         if data.get("map_wall_colors") is not None:
             self.wall_colors = {tuple(c) for c in data["map_wall_colors"]}
-        if map_image and os.path.isfile(map_image):
-            self.cell_px_input.setValue(int(data.get("map_cell_px", CELL)))
-            self.canvas.load_map(map_image, self.cell_px_input.value(), offset=tuple(data.get("map_offset", (0, 0))))
+        floor_maps = data.get("floor_maps")
+        if floor_maps is None and data.get("map_image"):            # scenarios saved before multi-floor maps
+            legacy_floor = data.get("map_floor") if data.get("map_floor") is not None else config.floor
+            floor_maps = {str(legacy_floor): {"path": data["map_image"], "cell_px": data.get("map_cell_px", CELL),
+                                              "offset": data.get("map_offset", [0, 0]), "client": False}}
+        floor_maps = floor_maps or {}
+        self.canvas.clear_floor_maps()
+        self.canvas.stairs = {}
+        client = data.get("client_minimap")
+        self._client_minimap = None
+        if client and os.path.isdir(client.get("folder", "")):
+            self._run_client_import(client, log_prefix="Scenariusz: ")
+        for z_text, entry in floor_maps.items():
+            if entry.get("client") or not entry.get("path") or not os.path.isfile(entry["path"]):
+                continue
+            self.canvas.set_floor(int(z_text))
+            self.canvas.load_map(entry["path"], int(entry.get("cell_px", CELL)),
+                                 offset=tuple(entry.get("offset", (0, 0))), fit=False)
             try:
-                self._map_rgba = load_rgba(map_image)
-                self._populate_palette(self._map_rgba)
+                rgba = load_rgba(entry["path"])
+                stairs = mask_to_cells(stairs_mask(rgba), int(entry.get("cell_px", CELL)),
+                                       tuple(entry.get("offset", (0, 0))), 0.3)
+                if stairs.shape == (self.canvas.rows, self.canvas.cols):
+                    self.canvas.stairs[int(z_text)] = stairs.astype(bool)
+                self._map_rgba = rgba
             except OSError:
                 self._map_rgba = None
         self.canvas.apply_config(config)
-        if map_image and os.path.isfile(map_image) and str(map_floor) not in config.collision:
-            self.log("warn", f"Scenariusz nie ma kolizji dla piętra {map_floor} - parsuję mapę {os.path.basename(map_image)}.")
-            self.canvas.set_floor(map_floor)
-            waypoints, spawns = list(self.canvas.waypoints), dict(self.canvas.spawns)
-            self.load_map_file(map_image)
-            self.canvas.waypoints, self.canvas.spawns = waypoints, spawns
-            self.canvas.refresh()
+        for z_text, entry in floor_maps.items():
+            if entry.get("path") and os.path.isfile(entry["path"]) and z_text not in config.collision:
+                self.log("warn", f"Scenariusz nie ma kolizji dla piętra {z_text} - parsuję {os.path.basename(entry['path'])}.")
+                self.canvas.set_floor(int(z_text))
+                waypoints, spawns = list(self.canvas.waypoints), dict(self.canvas.spawns)
+                self.load_map_file(entry["path"], fit=False)
+                self.canvas.waypoints, self.canvas.spawns = waypoints, spawns
+                self.canvas.refresh()
+        if self._map_rgba is not None:
+            self._populate_palette(self._map_rgba)
+        self.canvas.fit_map()
         self.floor_input.setValue(config.floor)
         self.level_input.setValue(config.level)
         self.magic_input.setValue(config.magic_level)
@@ -1772,6 +2011,8 @@ class MainWindow(QMainWindow):
         self.utamo_checkbox.setChecked(config.use_utamo)
         self.rod_combo.setCurrentIndex(max(0, self.rod_combo.findData(config.rod)))
         self.sd_input.setValue(config.sd_runes)
+        self.avalanche_input.setValue(config.avalanche_runes)
+        self.exp_rate_input.setValue(config.exp_rate)
         self.random_monsters_input.setValue(config.random_monster_count)
         self.diagonal_input.setValue(config.diagonal_multiplier)
         self.ground_speed_input.setValue(config.ground_speed)
@@ -1780,20 +2021,83 @@ class MainWindow(QMainWindow):
             self.monster_combo.setCurrentIndex(index)
         self.log("system", f"Wczytano scenariusz: {os.path.basename(path)}")
 
+    def import_client_minimap(self):
+        """Ask for the client minimap folder and the area to crop, then build walls/speeds/stairs per floor."""
+        previous = self._client_minimap or {}
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Minimapa klienta Tibii")
+        form = QFormLayout(dialog)
+        folder = QLineEdit(previous.get("folder", ""))
+        browse = QPushButton("…")
+        browse.clicked.connect(lambda *_: folder.setText(
+            QFileDialog.getExistingDirectory(dialog, "Folder minimapy klienta", folder.text() or PROJECT_DIR)
+            or folder.text()))
+        row = QHBoxLayout()
+        row.addWidget(folder, 1)
+        row.addWidget(browse)
+        center_x, center_y = self._spin(0, 65_535, previous.get("x", 32_000)), self._spin(0, 65_535, previous.get("y", 32_000))
+        radius = self._spin(8, 256, previous.get("radius", 48))
+        floors = QLineEdit(",".join(str(z) for z in previous.get("floors", [self.canvas.floor])))
+        hint = QLabel("Folder: .../Tibia/packages/Tibia/minimap (pliki Minimap_Color_X_Y_Z.png i "
+                      "Minimap_WaypointCost_X_Y_Z.png). Współrzędne środka i piętra odczytasz np. z tibiamaps.io.")
+        hint.setWordWrap(True)
+        hint.setObjectName("hint")
+        form.addRow(hint)
+        form.addRow("Folder:", row)
+        form.addRow("Środek X:", center_x)
+        form.addRow("Środek Y:", center_y)
+        form.addRow("Promień (pola):", radius)
+        form.addRow("Piętra (np. 7,8,9):", floors)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        try:
+            floor_list = [int(f) for f in floors.text().replace(" ", "").split(",") if f]
+        except ValueError:
+            QMessageBox.warning(self, "Błąd", "Piętra podaj jako liczby oddzielone przecinkami, np. 7,8")
+            return
+        params = {"folder": folder.text(), "x": center_x.value(), "y": center_y.value(),
+                  "radius": radius.value(), "floors": floor_list}
+        self.canvas.waypoints, self.canvas.spawns = [], {}
+        self._run_client_import(params)
+
+    def _run_client_import(self, params, log_prefix=""):
+        try:
+            terrain = load_client_minimap(params["folder"], params["x"], params["y"], params["radius"], params["floors"])
+        except Exception as exc:  # missing files, wrong folder, decoding problems - report, keep the old map
+            self.log("warn", f"{log_prefix}Import minimapy klienta nieudany: {exc}")
+            QMessageBox.warning(self, "Minimapa klienta", f"Import nieudany:\n{exc}")
+            return False
+        self.canvas.apply_terrain(terrain)
+        self._client_minimap = params
+        self._map_rgba = None
+        self.floor_input.setValue(min(terrain.layers))
+        for z, layer in sorted(terrain.layers.items()):
+            slow = int((layer.speed > 150).sum())
+            self.log("system", f"{log_prefix}Piętro {z}: ściany {int(layer.walls.sum())}, wolne pola {slow}, "
+                               f"schody/dziury {int(layer.stairs.sum())}.")
+        self.log("system", f"{log_prefix}Minimapa klienta: obszar {terrain.layers[min(terrain.layers)].walls.shape[1]} pól, "
+                           f"początek świata {terrain.layers[min(terrain.layers)].origin}, "
+                           f"przejścia między piętrami: {len(terrain.transitions)}.")
+        return True
+
     def _on_floor_changed(self, z):
         self.canvas.set_floor(z)
         c = self.canvas
-        if c.map_path and c.map_floor is not None and c.map_floor != z:
-            self.log("warn", f"Mapa {os.path.basename(c.map_path)} należy do piętra {c.map_floor}. "
-                             f"Piętro {z}: kolizje {int(c.grid().sum())} - wczytaj osobny PNG dla tego piętra.")
+        if c.floor_maps and z not in c.floor_maps:
+            self.log("warn", f"Piętro {z} nie ma mapy (wczytane piętra: {sorted(c.floor_maps)}). "
+                             f"Kolizje: {int(c.grid().sum())} - wczytaj PNG albo minimapę klienta dla tego piętra.")
 
     def _warn_if_no_walls(self, config):
         """Called before an episode: a loaded map whose start floor has no walls is almost always a mistake."""
         start_floor = int(config.waypoints[0][2]) if config.waypoints else config.floor
         walls = sum(row.count("1") for row in config.collision.get(str(start_floor), []))
-        if self.canvas.map_path and walls == 0:
+        if self.canvas.floor_maps and walls == 0:
             self.log("warn", f"UWAGA: piętro {start_floor} nie ma ani jednej ściany, a mapa jest wczytana "
-                             f"(piętro mapy: {self.canvas.map_floor}). Druid będzie chodził po czarnej pustce.")
+                             f"(piętra z mapą: {sorted(self.canvas.floor_maps)}). Druid będzie chodził po pustce.")
 
     # ----- sprites --------------------------------------------------------- #
 
@@ -1855,6 +2159,11 @@ class MainWindow(QMainWindow):
         sd_high = int(druid.level * sd.level_factor + druid.magic_level * sd.max_mlvl_factor + sd.max_base)
         sd_text = (f"SD: {sd_low}-{sd_high} (śmierć)" if druid.magic_level >= sd.min_magic_level
                    else f"SD: wymaga ML {sd.min_magic_level}")
+        ava = SPELLBOOK["avalanche"]
+        ava_low = int(druid.level * ava.level_factor + druid.magic_level * ava.min_mlvl_factor + ava.min_base)
+        ava_high = int(druid.level * ava.level_factor + druid.magic_level * ava.max_mlvl_factor + ava.max_base)
+        sd_text += (f"  |  Avalanche: {ava_low}-{ava_high} (lód, 37 pól)" if druid.magic_level >= ava.min_magic_level
+                    else f"  |  Avalanche: wymaga ML {ava.min_magic_level}")
         rod_name = self.rod_combo.currentData()
         if rod_name is None:
             rod_text = "Różdżka: brak"

@@ -89,22 +89,25 @@ FIELD_CACHE_SIZE = 64
 
 def distance_field(collision, goal, diagonal_cost=DEFAULT_DIAGONAL_MULTIPLIER):
     """
-    Dijkstra travel cost from every tile to `goal` (x, y) on an 8-connected grid, walls = inf.
-    Cached per (map contents, goal, cost), so each waypoint is solved once per map.
+    Dijkstra travel cost from every tile to `goal` - one (x, y) or a list of them (nearest wins) -
+    on an 8-connected grid, walls = inf. Cached per (map contents, goals, cost).
     """
+    goals = [tuple(goal)] if isinstance(goal[0], (int, np.integer)) else sorted(tuple(g) for g in goal)
     collision = np.ascontiguousarray(collision, dtype=np.uint8)
     key = (hashlib.blake2b(collision.tobytes(), digest_size=16).hexdigest(), collision.shape,
-           tuple(goal), float(diagonal_cost))
+           tuple(goals), float(diagonal_cost))
     if key in _field_cache:
         _field_cache.move_to_end(key)
         return _field_cache[key]
     rows, cols = collision.shape
     walls = collision.tolist()
     field = [[math.inf] * cols for _ in range(rows)]
-    gx, gy = goal
-    if 0 <= gx < cols and 0 <= gy < rows and not walls[gy][gx]:
-        field[gy][gx] = 0.0
-        heap = [(0.0, gx, gy)]
+    heap = []
+    for gx, gy in goals:
+        if 0 <= gx < cols and 0 <= gy < rows and not walls[gy][gx]:
+            field[gy][gx] = 0.0
+            heap.append((0.0, gx, gy))
+    if heap:
         while heap:
             cost, x, y = heapq.heappop(heap)
             if cost > field[y][x]:

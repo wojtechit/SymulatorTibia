@@ -85,6 +85,14 @@ python3 brainstem_example.py druid_policy.npz                                 # 
 - **Obserwacja (+8 cech, +81 pól):** kierunek patrzenia najbliższego potwora, wyrównanie poziome/pionowe/ukośne, czy ma czary obszarowe, czas do próby rzutu, „stoję w zagrożeniu”, oraz trzeci kanał okna 9×9 — mapa zagrożenia: 1 = pole, na którym fala/belka któregoś potwora by trafiła.
 - GUI: żółta kreska = kierunek patrzenia potwora, kolorowy błysk = obszar rzuconego czaru, checkbox „Strefy zagrożenia” pokazuje mapę z obserwacji agenta.
 
+## Ekonomia, Avalanche, teren (faza 5)
+
+- **Nagroda** (`rl_twin/rewards.py`): `exp_scale · exp za obrażenia` (proporcjonalnie do zadanych obrażeń; suma przy zabiciu = exp potwora × mnożnik serwera) `+ gold_scale · loot` `− gold_scale · koszt zapasów` (Great Mana Potion, SD, Avalanche — ceny w `items.json`, średni loot w `monsters.json`) + dotychczasowe kary (trafienia, śmierć, czas, akcje niemożliwe). Stały bonus za zabicie = 0.
+- **Statystyki**: exp/h, zysk/h, loot, koszt zapasów, HP min, % czasu z potworem obok, mikstury/h, runy/h, leczenia — w GUI i w trenerze (średnie ze 100 epizodów).
+- **Avalanche** (akcja `use_avalanche`, klawisz 6): runa lodowa, koło 37 pól (jak GFB w Tibii), zasięg 7, wspólny cooldown ataku 2 s z SD/Exori, cel = pole trafiające najwięcej potworów (linia wzroku). Obserwacja: cooldown, liczba run, ile potworów trafiłaby teraz Avalanche.
+- **Teren**: prędkość podłoża per pole (krok liczony z podłoża pola), schody/dziury/drabiny (żółte pola minimapy) łączone automatycznie z sąsiednim piętrem — wejście na pole zmienia piętro; nawigacja do punktu na innym piętrze prowadzi do właściwych schodów. Import folderu minimapy klienta (`Minimap_Color_*` + `Minimap_WaypointCost_*`, przycisk „Minimapa klienta…”): ściany, koszt pól (wolne pola = niebieski odcień), schody, tło każdego piętra. **Dekodowanie WaypointCost jest założeniem** (żółty = nieprzechodnie, magenta = nieodkryte, czerwony kanał = koszt względem najczęstszego) — sprawdź na swoich plikach.
+- **Edytor**: PgUp/PgDn = piętro, Ctrl+Z / Ctrl+Y = cofnij / ponów, Delete = usuń ostatni punkt trasy.
+
 ## MapParser (PNG → siatka)
 
 1. Obraz wczytywany jako RGBA (Pillow, awaryjnie Qt `QImage`).
@@ -104,9 +112,9 @@ Wartości w `monsters.json` pochodzą z ogólnej wiedzy o Tibii i są **przybli�
 
 ## Format eksportu modelu
 
-`druid_policy.npz`: `W0,b0` (290→128), `W1,b1` (128→128), `W2,b2` (128→14) + `metadata` (JSON: `feature_names`, `action_names`, stałe obserwacji, `env_config`). Inferencja: `argmax(relu(relu(x@W0+b0)@W1+b1)@W2+b2)`. Przy zainstalowanym PyTorch dodatkowo `druid_policy.pt` zgodny z `nn.Sequential(Linear, ReLU, Linear, ReLU, Linear)`.
+`druid_policy.npz`: `W0,b0` (294→128), `W1,b1` (128→128), `W2,b2` (128→15) + `metadata` (JSON: `feature_names`, `action_names`, stałe obserwacji, `env_config`). Inferencja: `argmax(relu(relu(x@W0+b0)@W1+b1)@W2+b2)`. Przy zainstalowanym PyTorch dodatkowo `druid_policy.pt` zgodny z `nn.Sequential(Linear, ReLU, Linear, ReLU, Linear)`.
 
-W `brainstem.py`: wypełnij `GameSnapshot`, przepuść przez `encode_observation()` z `rl_twin/observation.py` (nie przepisuj — kolejność cech musi się zgadzać) i podaj do `BrainstemPolicy.act_name()`. Modele z wcześniejszych faz (119/7, 190/13, 198/14) nie pasują do obecnej wersji (290 cech, 14 akcji) — trzeba je wytrenować od nowa. Mapę zagrożenia w `brainstem.py` licz tą samą funkcją `rl_twin.aoe.danger_window` (pozycje i kierunki potworów + czary z `monsters.json`).
+W `brainstem.py`: wypełnij `GameSnapshot`, przepuść przez `encode_observation()` z `rl_twin/observation.py` (nie przepisuj — kolejność cech musi się zgadzać) i podaj do `BrainstemPolicy.act_name()`. Modele z wcześniejszych faz (119/7, 190/13, 198/14) nie mają obecnego układu (294 cechy, 15 akcji): `load_policy()` / `--resume` przenosi wagi po nazwach cech i akcji (stare zachowanie bez zmian, nowe cechy = 0, nowa akcja = neutralna, epsilon wraca do połowy). Nagroda zmieniła się na ekonomiczną, więc i tak dotrenuj. Mapę zagrożenia w `brainstem.py` licz tą samą funkcją `rl_twin.aoe.danger_window` (pozycje i kierunki potworów + czary z `monsters.json`).
 
 ## Sprite'y (AssetManager)
 

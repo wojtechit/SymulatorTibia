@@ -12,9 +12,10 @@ _cache = {}
 
 
 class ItemDatabase:
-    def __init__(self, rods, source=None):
+    def __init__(self, rods, source=None, supplies=None):
         self.source = source
         self._rods = {rod.name: rod for rod in rods}
+        self.supplies = dict(supplies or {})     # key -> {"name", "price"}
 
     @classmethod
     def load(cls, path=None):
@@ -35,7 +36,9 @@ class ItemDatabase:
         names = [r.name for r in rods]
         if len(names) != len(set(names)):
             raise ValueError("Duplicate rod names")
-        return cls(rods, source)
+        supplies = {str(k): {"name": str(v.get("name", k)), "price": int(v.get("price", 0))}
+                    for k, v in data.get("supplies", {}).items()}
+        return cls(rods, source, supplies)
 
     @staticmethod
     def _parse_rod(entry, index):
@@ -58,6 +61,9 @@ class ItemDatabase:
             level=int(entry.get("level", 0)),
             attack_interval_ms=int(entry.get("attack_interval_ms", 2000)),
         )
+
+    def supply_prices(self):
+        return {key: entry["price"] for key, entry in self.supplies.items()}
 
     def rod_names(self):
         return list(self._rods)

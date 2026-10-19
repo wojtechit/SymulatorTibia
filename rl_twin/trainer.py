@@ -21,6 +21,8 @@ def run_training(env, agent, episodes, on_progress=None, should_stop=None, progr
     """
     recent_rewards = deque(maxlen=100)
     recent_kills = deque(maxlen=100)
+    recent_exp_h = deque(maxlen=100)
+    recent_profit_h = deque(maxlen=100)
     recent_deaths = deque(maxlen=100)
     started = time.perf_counter()
     last_report = 0.0
@@ -44,6 +46,8 @@ def run_training(env, agent, episodes, on_progress=None, should_stop=None, progr
 
         recent_rewards.append(info["episode_reward"])
         recent_kills.append(info["kills"])
+        recent_exp_h.append(info["exp_per_hour"])
+        recent_profit_h.append(info["profit_per_hour"])
         recent_deaths.append(1.0 if info["hp"] <= 0 else 0.0)
         episode_rewards.append(info["episode_reward"])
 
@@ -55,6 +59,8 @@ def run_training(env, agent, episodes, on_progress=None, should_stop=None, progr
             "episode_reward": info["episode_reward"],
             "avg_reward": sum(recent_rewards) / len(recent_rewards),
             "avg_kills": sum(recent_kills) / len(recent_kills),
+            "avg_exp_per_hour": sum(recent_exp_h) / len(recent_exp_h),
+            "avg_profit_per_hour": sum(recent_profit_h) / len(recent_profit_h),
             "death_rate": sum(recent_deaths) / len(recent_deaths),
             "epsilon": agent.epsilon,
             "loss": agent.last_loss,
@@ -91,12 +97,17 @@ def main():
     env = DruidHuntEnv(config)
     agent = DQNAgent(seed=args.seed)
     if args.resume:
-        agent.load_policy(args.resume)
+        metadata = agent.load_policy(args.resume)
         print(f"Wczytano model: {args.resume}")
+        if "transfer" in metadata:
+            t = metadata["transfer"]
+            print(f"Przeniesiono wagi ze starszego modelu: {t['kept_features']} cech zachowanych, "
+                  f"nowe cechy {len(t['new_features'])}, nowe akcje {t['new_actions']}")
 
     def report(stats):
         print(f"Epizod {stats['episode']}/{stats['episodes_total']} | "
               f"śr. nagroda {stats['avg_reward']:8.1f} | śr. zabicia {stats['avg_kills']:.2f} | "
+              f"exp/h {stats['avg_exp_per_hour']:9,.0f} | zysk/h {stats['avg_profit_per_hour']:9,.0f} | "
               f"zgony {stats['death_rate'] * 100:5.1f}% | eps {stats['epsilon']:.3f} | "
               f"{stats['steps_per_second']:.0f} kroków/s")
 

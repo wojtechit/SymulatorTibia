@@ -16,7 +16,7 @@ from .observation import ACTION_NAMES, FEATURE_NAMES, OBS_SIZE, VIEW_RADIUS
 from .physics import SERVER_TICK_MS, VIEW_RANGE_X, VIEW_RANGE_Y
 
 EXPORT_FORMAT = "rl_twin.dqn_policy"
-EXPORT_VERSION = 5
+EXPORT_VERSION = 6
 
 
 @dataclass
@@ -250,24 +250,92 @@ class DQNAgent:
         written.append(base + ".pt")
         return written
 
-    def load_policy(self, path):
-        """Load weights from an exported .npz (training counters are kept as metadata only)."""
+    def load_policy(self, path, transfer=True):
+        """
+        Load weights from an exported .npz. When the observation/action layout changed
+        (a newer phase added features or actions) and `transfer` is True, weights are
+        transplanted by feature and action name; see _transfer.
+        """
         data = np.load(path, allow_pickle=False)
         metadata = json.loads(str(data["metadata"]))
         if metadata.get("format") != EXPORT_FORMAT:
             raise ValueError("Nieznany format pliku modelu")
-        if metadata["obs_size"] != self.obs_size or metadata["layer_sizes"][-1] != self.n_actions:
-            raise ValueError("Model nie pasuje do przestrzeni obserwacji/akcji")
         sizes = metadata["layer_sizes"]
+        same_layout = (sizes[0] == self.obs_size and sizes[-1] == self.n_actions
+                       and metadata.get("feature_names", FEATURE_NAMES) == FEATURE_NAMES
+                       and metadata.get("action_names", ACTION_NAMES) == ACTION_NAMES)
+        if not same_layout:
+            if not transfer:
+                raise ValueError("Model nie pasuje do przestrzeni obserwacji/akcji")
+            return self._transfer(data, metadata)
         self.online = MLP(sizes, self.rng)
         self.target = MLP(sizes, self.rng)
         for i in range(len(sizes) - 1):
             self.online.weights[i][...] = data[f"W{i}"]
             self.online.biases[i][...] = data[f"b{i}"]
-        self.target.copy_from(self.online)
-        self.optimizer = Adam(self.online.params, self.config.learning_rate)
-        self.config.hidden_sizes = tuple(sizes[1:-1])
+        self._after_load(sizes)
         training = metadata.get("training", {})
         self.total_steps = int(training.get("total_steps", 0))
         self.episodes_trained = int(training.get("episodes", 0))
         return metadata
+
+    def _transfer(self, data, metadata):
+        """
+        Build a network for the current layout and copy what still means the same thing:
+          - input weights of every feature whose name exists in the old model (new features start at 0,
+            so the old behaviour is preserved until training uses them),
+          - hidden layers unchanged,
+          - output weights of every action whose name exists; new actions start with zero weights and
+            the mean old bias, so they are neither favoured nor ignored.
+        Exploration is reset to the middle of the epsilon schedule so new actions get tried.
+        """
+        old_sizes = metadata["layer_sizes"]
+        old_features = {name: i for i, name in enumerate(metadata.get("feature_names", []))}
+        old_actions = {name: i for i, name in enumerate(metadata.get("action_names", []))}
+        sizes = [self.obs_size, *old_sizes[1:-1], self.n_actions]
+        layers = len(sizes) - 1
+        self.online = MLP(sizes, self.rng)
+        self.target = MLP(sizes, self.rng)
+
+        w_in = np.zeros((self.obs_size, sizes[1]), dtype=np.float32)
+        kept_features = 0
+        for i, name in enumerate(FEATURE_NAMES):
+            j = old_features.get(name)
+            if j is not None:
+                w_in[i] = data["W0"][j]
+                kept_features += 1
+        self.online.weights[0][...] = w_in
+        self.online.biases[0][...] = data["b0"]
+        for k in range(1, layers - 1):
+            self.online.weights[k][...] = data[f"W{k}"]
+            self.online.biases[k][...] = data[f"b{k}"]
+        old_w_out, old_b_out = data[f"W{layers - 1}"], data[f"b{layers - 1}"]
+        w_out = np.zeros((sizes[-2], self.n_actions), dtype=np.float32)
+        b_out = np.full(self.n_actions, float(old_b_out.mean()), dtype=np.float32)
+        new_actions = []
+        for a, name in enumerate(ACTION_NAMES):
+            j = old_actions.get(name)
+            if j is None:
+                new_actions.append(name)
+                continue
+            w_out[:, a] = old_w_out[:, j]
+            b_out[a] = old_b_out[j]
+        self.online.weights[-1][...] = w_out
+        self.online.biases[-1][...] = b_out
+        self._after_load(sizes)
+        training = metadata.get("training", {})
+        self.episodes_trained = int(training.get("episodes", 0))
+        self.total_steps = self.config.epsilon_decay_steps // 2
+        metadata = dict(metadata)
+        metadata["transfer"] = {
+            "kept_features": kept_features,
+            "new_features": [n for n in FEATURE_NAMES if n not in old_features],
+            "dropped_features": [n for n in old_features if n not in FEATURE_NAMES],
+            "new_actions": new_actions,
+        }
+        return metadata
+
+    def _after_load(self, sizes):
+        self.target.copy_from(self.online)
+        self.optimizer = Adam(self.online.params, self.config.learning_rate)
+        self.config.hidden_sizes = tuple(sizes[1:-1])

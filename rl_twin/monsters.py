@@ -25,6 +25,7 @@ class MonsterTemplate:
     attack_interval_ms: int = 2000
     sprite: str = None   # TibiaWiki file name override, e.g. "Demon.gif"
     spells: tuple = ()   # MonsterSpell, cast in addition to melee
+    loot_value: int = 0  # average gold per kill
 
     def modifier(self, element):
         return self.resistances.get(element, 100) / 100.0
@@ -90,6 +91,7 @@ class MonsterDatabase:
             attack_interval_ms=int(entry.get("attack_interval_ms", 2000)),
             sprite=entry.get("sprite"),
             spells=tuple(MonsterDatabase._parse_spell(entry["name"], s) for s in entry.get("spells", [])),
+            loot_value=int(entry.get("loot_value", 0)),
         )
 
     @staticmethod

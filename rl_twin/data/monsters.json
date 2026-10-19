@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "_schema": {
     "hp": "max hit points",
     "exp": "experience granted on kill (base, no stage multiplier)",
@@ -9,7 +9,8 @@
     "attack_interval_ms": "time between melee attacks",
     "elemental_resistances": "damage taken in percent: 100 = neutral, 0 = immune, 120 = 20% weakness, 80 = 20% resistance",
     "sprite": "optional TibiaWiki file name; default is {Name_With_Underscores}.gif",
-    "spells": "optional list of area attacks: type beam|wave|ball, element, damage [min,max], cooldown_ms (attempt interval), chance (% per attempt), length (beam/wave: tiles in front), spread (wave: widens by 2 every N tiles), range + radius (ball, centred on the target)"
+    "spells": "optional list of area attacks: type beam|wave|ball, element, damage [min,max], cooldown_ms (attempt interval), chance (% per attempt), length (beam/wave: tiles in front), spread (wave: widens by 2 every N tiles), range + radius (ball, centred on the target)",
+    "loot_value": "average gold value of the loot per kill (NPC sell prices), used for profit"
   },
   "_source": "Approximate values from general Tibia knowledge. Verify against TibiaWiki before relying on exact numbers.",
   "monsters": [
@@ -32,7 +33,8 @@
         "energy": 100,
         "death": 100,
         "holy": 100
-      }
+      },
+      "loot_value": 15
     },
     {
       "name": "Minotaur",
@@ -53,7 +55,8 @@
         "energy": 100,
         "death": 100,
         "holy": 100
-      }
+      },
+      "loot_value": 20
     },
     {
       "name": "Cyclops",
@@ -74,7 +77,8 @@
         "energy": 100,
         "death": 110,
         "holy": 110
-      }
+      },
+      "loot_value": 60
     },
     {
       "name": "Tarantula",
@@ -95,7 +99,8 @@
         "energy": 100,
         "death": 100,
         "holy": 100
-      }
+      },
+      "loot_value": 40
     },
     {
       "name": "Giant Spider",
@@ -116,7 +121,8 @@
         "energy": 100,
         "death": 100,
         "holy": 100
-      }
+      },
+      "loot_value": 350
     },
     {
       "name": "Dragon",
@@ -165,7 +171,8 @@
           "range": 7,
           "radius": 4
         }
-      ]
+      ],
+      "loot_value": 280
     },
     {
       "name": "Dragon Lord",
@@ -226,7 +233,8 @@
           "range": 7,
           "radius": 4
         }
-      ]
+      ],
+      "loot_value": 850
     },
     {
       "name": "Hydra",
@@ -247,7 +255,8 @@
         "energy": 110,
         "death": 100,
         "holy": 100
-      }
+      },
+      "loot_value": 900
     },
     {
       "name": "Demon",
@@ -268,7 +277,8 @@
         "energy": 50,
         "death": 80,
         "holy": 112
-      }
+      },
+      "loot_value": 4000
     }
   ]
 }

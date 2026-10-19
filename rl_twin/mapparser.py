@@ -117,6 +117,17 @@ def detect_pixel_scale(rgba, min_share=0.9):
     return 1, 0, 0
 
 
+def mask_to_cells(mask, cell, offset=(0, 0), fraction=0.5):
+    """Downsample a per-pixel boolean mask to tiles: a tile is set when >= `fraction` of its pixels are."""
+    offset_x, offset_y = offset
+    mask = mask[offset_y:, offset_x:]
+    rows, cols = mask.shape[0] // cell, mask.shape[1] // cell
+    mask = mask[: rows * cell, : cols * cell]
+    if cell == 1:
+        return mask.astype(np.uint8)
+    return (mask.reshape(rows, cell, cols, cell).mean(axis=(1, 3)) >= fraction).astype(np.uint8)
+
+
 class MapParser:
     def __init__(self, cell_px=None, dark_threshold=DEFAULT_DARK_THRESHOLD, wall_colors=DEFAULT_WALL_COLORS,
                  color_tolerance=DEFAULT_COLOR_TOLERANCE, blocked_fraction=0.5, alpha_threshold=128):

@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "_schema": {
     "rods": "druid auto-attack weapons",
     "element": "physical | ice | earth | fire | energy | death | holy",
@@ -7,17 +7,120 @@
     "mana": "mana consumed per auto-attack; no attack when the druid has less",
     "range": "max Chebyshev distance to the target (line of sight required)",
     "level": "minimum character level to wield",
-    "attack_interval_ms": "auto-attack period"
+    "attack_interval_ms": "auto-attack period",
+    "supplies": "consumables: key -> {name, price (gold per unit, NPC price)}"
   },
-  "_source": "Approximate values from general Tibia knowledge. Verify against TibiaWiki before relying on exact numbers.",
+  "_source": "Approximate values from general Tibia knowledge. Verify against TibiaWiki before relying on exact numbers. Supply prices are approximate NPC prices.",
   "rods": [
-    {"name": "Snakebite Rod",    "element": "earth", "damage": [8, 18],  "mana": 2,  "range": 3, "level": 6,  "attack_interval_ms": 2000},
-    {"name": "Moonlight Rod",    "element": "ice",   "damage": [14, 24], "mana": 3,  "range": 3, "level": 13, "attack_interval_ms": 2000},
-    {"name": "Necrotic Rod",     "element": "death", "damage": [25, 35], "mana": 5,  "range": 3, "level": 19, "attack_interval_ms": 2000},
-    {"name": "Northwind Rod",    "element": "ice",   "damage": [25, 35], "mana": 5,  "range": 3, "level": 22, "attack_interval_ms": 2000},
-    {"name": "Terra Rod",        "element": "earth", "damage": [40, 60], "mana": 8,  "range": 3, "level": 26, "attack_interval_ms": 2000},
-    {"name": "Hailstorm Rod",    "element": "ice",   "damage": [45, 75], "mana": 13, "range": 3, "level": 33, "attack_interval_ms": 2000},
-    {"name": "Springsprout Rod", "element": "earth", "damage": [65, 85], "mana": 15, "range": 3, "level": 37, "attack_interval_ms": 2000},
-    {"name": "Underworld Rod",   "element": "death", "damage": [70, 90], "mana": 21, "range": 3, "level": 42, "attack_interval_ms": 2000}
-  ]
+    {
+      "name": "Snakebite Rod",
+      "element": "earth",
+      "damage": [
+        8,
+        18
+      ],
+      "mana": 2,
+      "range": 3,
+      "level": 6,
+      "attack_interval_ms": 2000
+    },
+    {
+      "name": "Moonlight Rod",
+      "element": "ice",
+      "damage": [
+        14,
+        24
+      ],
+      "mana": 3,
+      "range": 3,
+      "level": 13,
+      "attack_interval_ms": 2000
+    },
+    {
+      "name": "Necrotic Rod",
+      "element": "death",
+      "damage": [
+        25,
+        35
+      ],
+      "mana": 5,
+      "range": 3,
+      "level": 19,
+      "attack_interval_ms": 2000
+    },
+    {
+      "name": "Northwind Rod",
+      "element": "ice",
+      "damage": [
+        25,
+        35
+      ],
+      "mana": 5,
+      "range": 3,
+      "level": 22,
+      "attack_interval_ms": 2000
+    },
+    {
+      "name": "Terra Rod",
+      "element": "earth",
+      "damage": [
+        40,
+        60
+      ],
+      "mana": 8,
+      "range": 3,
+      "level": 26,
+      "attack_interval_ms": 2000
+    },
+    {
+      "name": "Hailstorm Rod",
+      "element": "ice",
+      "damage": [
+        45,
+        75
+      ],
+      "mana": 13,
+      "range": 3,
+      "level": 33,
+      "attack_interval_ms": 2000
+    },
+    {
+      "name": "Springsprout Rod",
+      "element": "earth",
+      "damage": [
+        65,
+        85
+      ],
+      "mana": 15,
+      "range": 3,
+      "level": 37,
+      "attack_interval_ms": 2000
+    },
+    {
+      "name": "Underworld Rod",
+      "element": "death",
+      "damage": [
+        70,
+        90
+      ],
+      "mana": 21,
+      "range": 3,
+      "level": 42,
+      "attack_interval_ms": 2000
+    }
+  ],
+  "supplies": {
+    "great_mana_potion": {
+      "name": "Great Mana Potion",
+      "price": 144
+    },
+    "sudden_death_rune": {
+      "name": "Sudden Death Rune",
+      "price": 135
+    },
+    "avalanche_rune": {
+      "name": "Avalanche Rune",
+      "price": 64
+    }
+  }
 }

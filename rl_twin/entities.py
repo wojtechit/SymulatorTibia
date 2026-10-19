@@ -69,7 +69,7 @@ class Entity:
 
 class Druid(Entity):
     def __init__(self, level, magic_level, armor=0, potions=0, x=0, y=0, z=GROUND_FLOOR,
-                 rod=None, sd_runes=0):
+                 rod=None, sd_runes=0, avalanche_runes=0):
         level = max(8, int(level))
         super().__init__("Druid", x, y, z,
                          max_hp=145 + (level - 8) * 5,
@@ -85,7 +85,7 @@ class Druid(Entity):
         self.cooldowns = Cooldowns()
         self.next_regen_ms = REGEN_INTERVAL_MS
         self.rod = rod if rod is None or self.level >= rod.level else None
-        self.sd_runes = max(0, int(sd_runes))
+        self.runes = {"sudden_death": max(0, int(sd_runes)), "avalanche": max(0, int(avalanche_runes))}
         self.next_auto_attack_ms = 0
 
     @property
@@ -100,12 +100,20 @@ class Druid(Entity):
                 and self.cooldowns.ready(spell, now_ms))
 
     def can_use_rune(self, rune, now_ms):
-        return (self.alive and self.sd_runes > 0 and self.magic_level >= rune.min_magic_level
+        return (self.alive and self.runes.get(rune.key, 0) > 0 and self.magic_level >= rune.min_magic_level
                 and self.cooldowns.ready(rune, now_ms))
 
     def use_rune(self, rune, now_ms):
-        self.sd_runes -= 1
+        self.runes[rune.key] -= 1
         self.cooldowns.trigger(rune, now_ms)
+
+    @property
+    def sd_runes(self):
+        return self.runes["sudden_death"]
+
+    @property
+    def avalanche_runes(self):
+        return self.runes["avalanche"]
 
     def auto_attack_remaining_ms(self, now_ms):
         return max(0, self.next_auto_attack_ms - now_ms) if self.rod else 0
@@ -186,6 +194,7 @@ class Monster(Entity):
         self.armor = template.armor
         self.resistances = template.resistances
         self.experience = template.exp
+        self.loot_value = template.loot_value
         self.attack_interval_ms = template.attack_interval_ms
         self.aggro = False
         self.next_attack_ms = 0

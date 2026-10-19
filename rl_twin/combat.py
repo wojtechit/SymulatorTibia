@@ -40,6 +40,7 @@ class Spell:
     group_cooldown_ms: int = 0
     range: int = 0            # Chebyshev distance for targeted spells and runes
     min_magic_level: int = 0  # required to cast / use
+    area_radius: int = 0      # > 0: ball area around the aimed tile (aoe.ball_area convention)
     level_factor: float = 0.2
     min_mlvl_factor: float = 0.0
     min_base: float = 0.0
@@ -69,6 +70,11 @@ SPELLBOOK = {
                           cooldown_ms=2000, group=GROUP_ATTACK, group_cooldown_ms=2000, range=7,
                           min_magic_level=15,
                           min_mlvl_factor=4.3, min_base=32, max_mlvl_factor=6.8, max_base=44),
+    # Avalanche: ice ball rune; area_radius 4 = Tibia's 37-tile circle (rows 3-5-7-7-7-5-3), like GFB
+    "avalanche": Spell("avalanche", "Avalanche", "adori mas frigo", "rune", ICE, mana=0,
+                       cooldown_ms=2000, group=GROUP_ATTACK, group_cooldown_ms=2000, range=7,
+                       min_magic_level=4, area_radius=4,
+                       min_mlvl_factor=1.2, min_base=7, max_mlvl_factor=2.85, max_base=16),
     "utamo_vita": Spell("utamo_vita", "Magic Shield", "utamo vita", "support", mana=50,
                         cooldown_ms=2000, group=GROUP_SUPPORT, group_cooldown_ms=2000),
 }

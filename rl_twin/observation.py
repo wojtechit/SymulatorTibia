@@ -15,6 +15,7 @@ VIEW_RADIUS = 4           # local window: (2 * VIEW_RADIUS + 1) ** 2 cells per c
 POTION_NORMALIZER = 100   # potions_left saturates at this count
 RUNE_NORMALIZER = 100     # sd_runes_left saturates at this count
 PATH_NORMALIZER = 100.0   # waypoint_path_distance saturates at this travel cost
+CLUSTER_NORMALIZER = 5    # avalanche_best_hits saturates at this many monsters
 STEP_MS_NORMALIZER = 1000.0
 MODIFIER_NORMALIZER = 200.0
 
@@ -22,13 +23,13 @@ ACTION_NAMES = [
     "up", "down", "left", "right",
     "up_left", "up_right", "down_left", "down_right",
     "exori_frigo", "exori_tera", "heal", "mana_potion", "wait",
-    "use_sd",
+    "use_sd", "use_avalanche",
 ]
 ACTION_LABELS_PL = [
     "Góra", "Dół", "Lewo", "Prawo",
     "Ukos ↖", "Ukos ↗", "Ukos ↙", "Ukos ↘",
     "Exori Frigo (lód)", "Exori Tera (ziemia)", "Exura Gran", "Mikstura many", "Czekaj",
-    "Sudden Death (runa)",
+    "Sudden Death (runa)", "Avalanche (runa)",
 ]
 
 SCALAR_FEATURES = [
@@ -45,6 +46,7 @@ SCALAR_FEATURES = [
     "monster_facing_dx", "monster_facing_dy", "aligned_horizontal", "aligned_vertical", "aligned_diagonal",
     "monster_has_aoe", "monster_spell_cooldown", "danger_here",
     "waypoint_path_dx", "waypoint_path_dy", "waypoint_path_distance",
+    "cooldown_avalanche", "avalanche_runes_left", "avalanche_best_hits", "waypoint_floor_delta",
 ]
 _WINDOW = [(dx, dy) for dy in range(-VIEW_RADIUS, VIEW_RADIUS + 1)
            for dx in range(-VIEW_RADIUS, VIEW_RADIUS + 1)]
@@ -99,6 +101,8 @@ class GameSnapshot:
     next_waypoint: tuple = None    # (x, y, z) or None
     danger: np.ndarray = None      # (2r+1, 2r+1) beam/wave threat map from aoe.danger_window, or None
     waypoint_path: tuple = None    # (dx, dy, cost) from physics.path_direction toward the next waypoint
+    avalanche_runes: int = 0
+    avalanche_hits: int = 0        # monsters the best Avalanche aim would hit right now
 
 
 def _visible(snap, m):
@@ -171,6 +175,11 @@ def encode_observation(snap):
         obs[44] = step_x
         obs[45] = step_y
         obs[46] = 1.0 if cost == float("inf") else min(cost, PATH_NORMALIZER) / PATH_NORMALIZER
+    obs[47] = cds.get("avalanche", 0.0)
+    obs[48] = min(snap.avalanche_runes, RUNE_NORMALIZER) / RUNE_NORMALIZER
+    obs[49] = min(snap.avalanche_hits, CLUSTER_NORMALIZER) / CLUSTER_NORMALIZER
+    if snap.next_waypoint is not None:
+        obs[50] = float(np.clip(snap.next_waypoint[2] - snap.player_z, -1, 1))
 
     # Local window, out-of-bounds counts as blocked
     r = VIEW_RADIUS
