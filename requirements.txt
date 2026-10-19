@@ -1,1 +1,4 @@
 PyQt5>=5.15
+numpy>=1.24
+# opcjonalnie, tylko do eksportu .pt:
+# torch>=2.0
