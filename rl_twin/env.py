@@ -19,6 +19,7 @@ import numpy as np
 
 from .combat import ELEMENT_LABELS_PL, PHYSICAL, SPELLBOOK, UTAMO_VITA_DURATION_MS, POTION_EXHAUST_MS
 from .entities import GROUND_FLOOR, Druid, Monster
+from .items import ItemDatabase
 from .monsters import MonsterDatabase
 from .observation import ACTION_NAMES, OBS_SIZE, GameSnapshot, MonsterView, encode_observation
 from .physics import (
@@ -38,6 +39,7 @@ TIME_UNIT_MS = 500         # the -1 step penalty is charged per 500 ms of game t
 ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT = 0, 1, 2, 3
 ACTION_UP_LEFT, ACTION_UP_RIGHT, ACTION_DOWN_LEFT, ACTION_DOWN_RIGHT = 4, 5, 6, 7
 ACTION_EXORI_FRIGO, ACTION_EXORI_TERA, ACTION_HEAL, ACTION_MANA_POTION, ACTION_WAIT = 8, 9, 10, 11, 12
+ACTION_USE_SD = 13
 MOVE_DELTAS = {
     ACTION_UP: (0, -1), ACTION_DOWN: (0, 1), ACTION_LEFT: (-1, 0), ACTION_RIGHT: (1, 0),
     ACTION_UP_LEFT: (-1, -1), ACTION_UP_RIGHT: (1, -1),
@@ -45,6 +47,7 @@ MOVE_DELTAS = {
 }
 ATTACK_SPELLS = {ACTION_EXORI_FRIGO: "exori_frigo", ACTION_EXORI_TERA: "exori_tera"}
 STRIKE_RANGE = SPELLBOOK["exori_frigo"].range
+RUNE_RANGE = SPELLBOOK["sudden_death"].range
 
 
 class Discrete:
@@ -111,6 +114,9 @@ class EnvConfig:
     ground_speed: int = DEFAULT_GROUND_SPEED
     diagonal_multiplier: float = DEFAULT_DIAGONAL_MULTIPLIER
     monsters_file: str = None                       # None = rl_twin/data/monsters.json
+    rod: str = None                                 # rod name from items.json, None = no weapon
+    sd_runes: int = 0
+    items_file: str = None                          # None = rl_twin/data/items.json
     seed: int = None
     rewards: RewardConfig = field(default_factory=RewardConfig)
 
@@ -152,10 +158,13 @@ class EnvConfig:
 class DruidHuntEnv:
     """Episode ends on death, when all monsters die (terminated) or at max_steps (truncated)."""
 
-    def __init__(self, config=None, record_events=False, monster_db=None):
+    def __init__(self, config=None, record_events=False, monster_db=None, item_db=None):
         self.config = config or EnvConfig()
         self.record_events = record_events
         self.monster_db = monster_db or MonsterDatabase.load(self.config.monsters_file)
+        self.item_db = item_db or ItemDatabase.load(self.config.items_file)
+        if self.config.rod and not self.item_db.has_rod(self.config.rod):
+            raise ValueError(f"Unknown rod: {self.config.rod}")
         self.action_space = Discrete(len(ACTION_NAMES))
         self.observation_space = Box(-1.0, 1.0, (OBS_SIZE,))
         self.rng = random.Random(self.config.seed)
@@ -181,7 +190,9 @@ class DruidHuntEnv:
             self.rng.seed(seed)
         cfg = self.config
         x, y, z = self._start_position()
-        self.druid = Druid(cfg.level, cfg.magic_level, cfg.armor, cfg.mana_potions, x, y, z)
+        rod = self.item_db.rod(cfg.rod) if cfg.rod else None
+        self.druid = Druid(cfg.level, cfg.magic_level, cfg.armor, cfg.mana_potions, x, y, z,
+                           rod=rod, sd_runes=cfg.sd_runes)
         self.monsters = self._create_monsters()
         self.time_ms = 0
         self.steps = 0
@@ -191,6 +202,10 @@ class DruidHuntEnv:
         self.damage_taken = 0
         self.episode_reward = 0.0
         self.events = []
+        if rod is not None and self.druid.rod is None:
+            self._event("warn", f"{rod.name} wymaga poziomu {rod.level} - walczę bez różdżki.")
+        if cfg.sd_runes and self.druid.magic_level < SPELLBOOK["sudden_death"].min_magic_level:
+            self._event("warn", "Sudden Death wymaga poziomu magii 15 - runy będą bezużyteczne.")
         if cfg.use_utamo and self.druid.cast_utamo(self.time_ms):
             self._event("shield", "Druid rzuca Utamo Vita.")
         return self._observe(), self._info()
@@ -242,17 +257,17 @@ class DruidHuntEnv:
             if target is None or not druid.can_cast(spell, now):
                 return rewards.invalid_action, DECISION_MS
             druid.pay_for(spell, now)
-            dealt, percent = target.take_spell_damage(
-                spell.roll(druid.level, druid.magic_level, self.rng), spell.element, self.rng)
-            target.aggro = True
-            self._event("attack", f"{spell.name} ({ELEMENT_LABELS_PL[spell.element]}, {percent}%) "
-                                  f"w {target.name}: {dealt} obr. HP: {target.hp}/{target.max_hp}.")
-            if not target.alive:
-                self.kills += 1
-                self.experience += target.experience
-                self._event("kill", f"{target.name} ginie! +{target.experience} exp.")
-                return rewards.kill, DECISION_MS
-            return 0.0, DECISION_MS
+            raw = spell.roll(druid.level, druid.magic_level, self.rng)
+            return self._hit_monster(target, raw, spell.element, spell.name), DECISION_MS
+
+        if action == ACTION_USE_SD:
+            rune = SPELLBOOK["sudden_death"]
+            target = self._select_target(rune.range)
+            if target is None or not druid.can_use_rune(rune, now):
+                return rewards.invalid_action, DECISION_MS
+            druid.use_rune(rune, now)
+            raw = rune.roll(druid.level, druid.magic_level, self.rng)
+            return self._hit_monster(target, raw, rune.element, f"{rune.name} [{druid.sd_runes}]"), DECISION_MS
 
         if action == ACTION_HEAL:
             spell = SPELLBOOK["exura_gran"]
@@ -273,13 +288,40 @@ class DruidHuntEnv:
 
         return 0.0, DECISION_MS  # ACTION_WAIT
 
-    def _select_target(self, spell_range):
-        """Lowest-HP visible monster within range and line of sight (auto-target)."""
+    def _hit_monster(self, target, raw, element, source):
+        """Apply attack damage (armor/resistance aware). Returns the kill reward or 0."""
+        dealt, percent = target.take_spell_damage(raw, element, self.rng)
+        target.aggro = True
+        self._event("attack", f"{source} ({ELEMENT_LABELS_PL[element]}, {percent}%) "
+                              f"w {target.name}: {dealt} obr. HP: {target.hp}/{target.max_hp}.")
+        if target.alive:
+            return 0.0
+        self.kills += 1
+        self.experience += target.experience
+        self._event("kill", f"{target.name} ginie! +{target.experience} exp.")
+        return self.config.rewards.kill
+
+    def _rod_auto_attack(self, now):
+        """Weapon swing on its own 2 s timer, independent of agent decisions."""
+        druid = self.druid
+        if druid.rod is None or now < druid.next_auto_attack_ms:
+            return 0.0
+        target = self._select_target(druid.rod.range)
+        if target is None:
+            return 0.0
+        rod = druid.try_auto_attack(now)
+        if rod is None:
+            return 0.0
+        return self._hit_monster(target, rod.roll(self.rng), rod.element, rod.name)
+
+    def _select_target(self, attack_range):
+        """Lowest-HP monster on screen within range and line of sight (auto-target)."""
         druid = self.druid
         grid = self._grid_list(druid.z)
         candidates = [m for m in self.monsters
                       if m.alive and m.z == druid.z
-                      and chebyshev(druid.x, druid.y, m.x, m.y) <= spell_range
+                      and chebyshev(druid.x, druid.y, m.x, m.y) <= attack_range
+                      and in_view(druid.x, druid.y, m.x, m.y)
                       and has_line_of_sight(grid, druid.x, druid.y, m.x, m.y)]
         return min(candidates, key=lambda m: (m.hp, chebyshev(druid.x, druid.y, m.x, m.y)), default=None)
 
@@ -304,6 +346,7 @@ class DruidHuntEnv:
                 self._event("shield", "Utamo Vita wygasło.")
             if self.config.use_utamo and not druid.utamo_active and druid.cast_utamo(now):
                 self._event("shield", f"Druid odnawia Utamo Vita. Mana: {druid.mana}/{druid.max_mana}.")
+            reward += self._rod_auto_attack(now)
             reward += self._monsters_think(now)
         return reward
 
@@ -443,6 +486,8 @@ class DruidHuntEnv:
         grid = self._grid_list(druid.z)
         cd = druid.cooldowns
         frigo, tera, heal = SPELLBOOK["exori_frigo"], SPELLBOOK["exori_tera"], SPELLBOOK["exura_gran"]
+        sd = SPELLBOOK["sudden_death"]
+        rod = druid.rod
         return GameSnapshot(
             cols=self.config.cols,
             rows=self.config.rows,
@@ -458,7 +503,13 @@ class DruidHuntEnv:
                 "exori_tera": cd.spell_remaining(tera, now) / tera.cooldown_ms,
                 "heal": cd.spell_remaining(heal, now) / heal.cooldown_ms,
                 "potion": cd.remaining("potion", now) / POTION_EXHAUST_MS,
+                "sd": cd.spell_remaining(sd, now) / sd.cooldown_ms,
+                "rod": druid.auto_attack_remaining_ms(now) / rod.attack_interval_ms if rod else 0.0,
             },
+            sd_runes=druid.sd_runes,
+            rune_range=RUNE_RANGE,
+            rod_equipped=rod is not None,
+            rod_range=rod.range if rod else 0,
             potions_left=druid.potions,
             player_step_ms=self._step_duration(druid, False) or 0,
             spell_range=STRIKE_RANGE,
@@ -471,6 +522,8 @@ class DruidHuntEnv:
                 earth_modifier=m.resistances.get("earth", 100),
                 step_ms=self._step_duration(m, False) or 0,
                 line_of_sight=m.z == druid.z and has_line_of_sight(grid, druid.x, druid.y, m.x, m.y),
+                death_modifier=m.resistances.get("death", 100),
+                rod_modifier=m.resistances.get(rod.element, 100) if rod else 100,
             ) for m in self.monsters if m.alive],
             next_waypoint=self.waypoints[self.waypoint_index] if self.waypoints else None,
         )

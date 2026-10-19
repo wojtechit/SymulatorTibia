@@ -38,7 +38,8 @@ class Spell:
     cooldown_ms: int = 0
     group: str = GROUP_ATTACK
     group_cooldown_ms: int = 0
-    range: int = 0            # Chebyshev distance for targeted spells
+    range: int = 0            # Chebyshev distance for targeted spells and runes
+    min_magic_level: int = 0  # required to cast / use
     level_factor: float = 0.2
     min_mlvl_factor: float = 0.0
     min_base: float = 0.0
@@ -63,10 +64,36 @@ SPELLBOOK = {
     "exura_gran": Spell("exura_gran", "Intense Healing", "exura gran", "heal", mana=70,
                         cooldown_ms=1000, group=GROUP_HEALING, group_cooldown_ms=1000,
                         min_mlvl_factor=3.184, min_base=20, max_mlvl_factor=5.59, max_base=35),
+    # Runes cost no mana; they consume a charge and share the attack cooldown group with strikes
+    "sudden_death": Spell("sudden_death", "Sudden Death", "adori gran mort", "rune", DEATH, mana=0,
+                          cooldown_ms=2000, group=GROUP_ATTACK, group_cooldown_ms=2000, range=7,
+                          min_magic_level=15,
+                          min_mlvl_factor=4.3, min_base=32, max_mlvl_factor=6.8, max_base=44),
     "utamo_vita": Spell("utamo_vita", "Magic Shield", "utamo vita", "support", mana=50,
                         cooldown_ms=2000, group=GROUP_SUPPORT, group_cooldown_ms=2000),
 }
 UTAMO_VITA_DURATION_MS = 200_000
+AUTO_ATTACK_INTERVAL_MS = 2000
+
+
+@dataclass(frozen=True)
+class Rod:
+    """Druid weapon: fixed elemental damage per auto-attack, paid with mana."""
+    name: str
+    element: str
+    damage_min: int
+    damage_max: int
+    mana: int
+    range: int
+    level: int = 0
+    attack_interval_ms: int = AUTO_ATTACK_INTERVAL_MS
+
+    def roll(self, rng):
+        return rng.randint(self.damage_min, self.damage_max)
+
+    def label_pl(self):
+        return (f"{self.name} ({ELEMENT_LABELS_PL[self.element]} {self.damage_min}-{self.damage_max}, "
+                f"{self.mana} many, zasięg {self.range}, lvl {self.level}+)")
 POTION_EXHAUST_MS = 1000
 
 

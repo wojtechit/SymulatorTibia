@@ -45,6 +45,7 @@ from PyQt5.QtWidgets import (
 )
 
 from .agent import DQNAgent
+from .combat import ELEMENT_LABELS_PL, SPELLBOOK
 from .assets import AssetManager, sprite_entries
 from .entities import GROUND_FLOOR, Druid
 from .env import (
@@ -60,6 +61,7 @@ from .env import (
     ACTION_UP,
     ACTION_UP_LEFT,
     ACTION_UP_RIGHT,
+    ACTION_USE_SD,
     ACTION_WAIT,
     STRIKE_RANGE,
     DruidHuntEnv,
@@ -67,6 +69,7 @@ from .env import (
     grid_to_rows,
 )
 from .mapparser import ColorRule, MapParser, load_rgba
+from .items import ItemDatabase
 from .monsters import MonsterDatabase
 from .observation import ACTION_LABELS_PL
 from .physics import DEFAULT_DIAGONAL_MULTIPLIER, DEFAULT_GROUND_SPEED, step_duration_ms
@@ -751,6 +754,7 @@ class MainWindow(QMainWindow):
         self.resize(1580, 960)
 
         self.monster_db = MonsterDatabase.load()
+        self.item_db = ItemDatabase.load()
         self.monsters_file = None
         self.asset_manager = AssetManager(SPRITES_DIR, log=print)
         self.sprite_store = SpriteStore(self.asset_manager)
@@ -850,17 +854,33 @@ class MainWindow(QMainWindow):
             spin.valueChanged.connect(self._update_preview)
         self.utamo_checkbox = QCheckBox("Utamo Vita (auto)")
         self.utamo_checkbox.setChecked(True)
+        self.rod_combo = QComboBox()
+        self.rod_combo.addItem("Brak różdżki", None)
+        for name in self.item_db.rod_names():
+            rod = self.item_db.rod(name)
+            self.rod_combo.addItem(f"{rod.name} ({ELEMENT_LABELS_PL[rod.element]})", rod.name)
+            self.rod_combo.setItemData(self.rod_combo.count() - 1, rod.label_pl(), Qt.ToolTipRole)
+        default_rod = self.rod_combo.findData("Hailstorm Rod")
+        self.rod_combo.setCurrentIndex(max(0, default_rod))
+        self.rod_combo.currentIndexChanged.connect(lambda *_: self._update_preview())
+        for combo in (self.rod_combo,):
+            combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            combo.setMinimumContentsLength(12)
+        self.sd_input = self._spin(0, 10_000, 100)
+        self.sd_input.setToolTip("Liczba run Sudden Death w plecaku (0 = brak amunicji)")
+        self.sd_input.valueChanged.connect(lambda *_: self._update_preview())
         self.preview_label = QLabel()
         self.preview_label.setStyleSheet("color: #9ccc65;")
         self.preview_label.setWordWrap(True)
         fields = [("Poziom:", self.level_input), ("Poziom magii:", self.magic_input),
                   ("Pancerz (eq):", self.armor_input), ("Great Mana Potion:", self.potions_input),
-                  ("Limit decyzji:", self.max_steps_input), ("", self.utamo_checkbox)]
+                  ("Limit decyzji:", self.max_steps_input), ("", self.utamo_checkbox),
+                  ("Różdżka:", self.rod_combo), ("Runy SD:", self.sd_input)]
         for i, (text, widget) in enumerate(fields):
             row, col = divmod(i, 2)
             grid.addWidget(QLabel(text), row, col * 2)
             grid.addWidget(widget, row, col * 2 + 1)
-        grid.addWidget(self.preview_label, 3, 0, 1, 4)
+        grid.addWidget(self.preview_label, 4, 0, 1, 4)
         return group
 
     def _build_editor_group(self):
@@ -882,6 +902,8 @@ class MainWindow(QMainWindow):
 
         grid = QGridLayout()
         self.monster_combo = QComboBox()
+        self.monster_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.monster_combo.setMinimumContentsLength(12)
         self.monster_combo.currentIndexChanged.connect(
             lambda *_: setattr(self.canvas, "monster_type", self.monster_combo.currentData()))
         self.random_monsters_input = self._spin(0, 50, 3)
@@ -968,7 +990,7 @@ class MainWindow(QMainWindow):
         row.addWidget(self.speed_combo)
         layout.addLayout(row)
         keys = QLabel("Klawisze: W/A/S/D lub strzałki - ruch, Q/E/Z/C - ukosy, 1 - Exori Frigo, "
-                      "2 - Exori Tera, 3 - Exura Gran, 4 - mikstura many")
+                      "2 - Exori Tera, 3 - Exura Gran, 4 - mikstura many, 5 - runa SD")
         keys.setObjectName("hint")
         keys.setWordWrap(True)
         layout.addWidget(keys)
@@ -997,6 +1019,7 @@ class MainWindow(QMainWindow):
             ("time", "Czas gry:"), ("reward", "Nagroda epizodu:"),
             ("kills", "Zabite:"), ("last_reward", "Ostatnia nagroda:"),
             ("utamo", "Utamo Vita:"), ("action", "Ostatnia akcja:"),
+            ("rod", "Różdżka:"), ("sd", "Runy SD:"),
         ])
         return page
 
@@ -1097,7 +1120,7 @@ class MainWindow(QMainWindow):
             Qt.Key_Q: ACTION_UP_LEFT, Qt.Key_E: ACTION_UP_RIGHT,
             Qt.Key_Z: ACTION_DOWN_LEFT, Qt.Key_C: ACTION_DOWN_RIGHT,
             Qt.Key_1: ACTION_EXORI_FRIGO, Qt.Key_2: ACTION_EXORI_TERA,
-            Qt.Key_3: ACTION_HEAL, Qt.Key_4: ACTION_MANA_POTION,
+            Qt.Key_3: ACTION_HEAL, Qt.Key_4: ACTION_MANA_POTION, Qt.Key_5: ACTION_USE_SD,
         }
         QApplication.instance().installEventFilter(self)
 
@@ -1140,6 +1163,7 @@ class MainWindow(QMainWindow):
         self.canvas.editing_enabled = editable
         for widget in (self.level_input, self.magic_input, self.armor_input, self.potions_input,
                        self.max_steps_input, self.utamo_checkbox, self.random_monsters_input,
+                       self.rod_combo, self.sd_input,
                        self.cell_px_input, self.tolerance_input, self.fraction_input,
                        self.diagonal_input, self.ground_speed_input,
                        self.load_map_button, self.reparse_button, self.clear_map_button,
@@ -1186,6 +1210,8 @@ class MainWindow(QMainWindow):
             ground_speed=self.ground_speed_input.value(),
             diagonal_multiplier=self.diagonal_input.value(),
             monsters_file=self.monsters_file,
+            rod=self.rod_combo.currentData(),
+            sd_runes=self.sd_input.value(),
         )
 
     # ----- manual / visual mode -------------------------------------------- #
@@ -1290,6 +1316,12 @@ class MainWindow(QMainWindow):
                            if druid.utamo_active else "Nieaktywne")
         if action is not None and action != ACTION_WAIT:
             v["action"].setText(ACTION_LABELS_PL[action])
+        if druid.rod is None:
+            v["rod"].setText("brak")
+        else:
+            ready = druid.auto_attack_remaining_ms(env.time_ms)
+            v["rod"].setText(f"{druid.rod.name} ({'gotowa' if ready == 0 else f'{ready / 1000:.1f} s'})")
+        v["sd"].setText(str(druid.sd_runes))
 
     def _log_env_events(self):
         if self.env is None:
@@ -1474,6 +1506,8 @@ class MainWindow(QMainWindow):
         self.potions_input.setValue(config.mana_potions)
         self.max_steps_input.setValue(config.max_steps)
         self.utamo_checkbox.setChecked(config.use_utamo)
+        self.rod_combo.setCurrentIndex(max(0, self.rod_combo.findData(config.rod)))
+        self.sd_input.setValue(config.sd_runes)
         self.random_monsters_input.setValue(config.random_monster_count)
         self.diagonal_input.setValue(config.diagonal_multiplier)
         self.ground_speed_input.setValue(config.ground_speed)
@@ -1535,8 +1569,21 @@ class MainWindow(QMainWindow):
         multiplier = self.diagonal_input.value()
         straight = step_duration_ms(druid.speed, False, ground, multiplier)
         diagonal = step_duration_ms(druid.speed, True, ground, multiplier)
-        self.preview_label.setText(f"Maks. HP: {druid.max_hp}  |  Maks. mana: {druid.max_mana}  |  "
-                                   f"Prędkość: {druid.speed}  |  Krok: {straight} ms, ukos: {diagonal} ms")
+        sd = SPELLBOOK["sudden_death"]
+        sd_low = int(druid.level * sd.level_factor + druid.magic_level * sd.min_mlvl_factor + sd.min_base)
+        sd_high = int(druid.level * sd.level_factor + druid.magic_level * sd.max_mlvl_factor + sd.max_base)
+        sd_text = (f"SD: {sd_low}-{sd_high} (śmierć)" if druid.magic_level >= sd.min_magic_level
+                   else f"SD: wymaga ML {sd.min_magic_level}")
+        rod_name = self.rod_combo.currentData()
+        if rod_name is None:
+            rod_text = "Różdżka: brak"
+        else:
+            rod = self.item_db.rod(rod_name)
+            rod_text = (f"{rod.name}: {ELEMENT_LABELS_PL[rod.element]} {rod.damage_min}-{rod.damage_max}, "
+                        f"{rod.mana} many, zasięg {rod.range}" if druid.level >= rod.level
+                        else f"Różdżka: {rod.name} wymaga poziomu {rod.level}!")
+        self.preview_label.setText(f"HP {druid.max_hp}  |  Mana {druid.max_mana}  |  Prędkość {druid.speed}  |  "
+                                   f"Krok {straight} ms, ukos {diagonal} ms\n{rod_text}\n{sd_text}")
         if self.env is None:
             self._set_bar(self.hp_bar, druid.max_hp, druid.max_hp)
             self._set_bar(self.mana_bar, druid.max_mana, druid.max_mana)

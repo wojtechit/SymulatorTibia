@@ -68,7 +68,8 @@ class Entity:
 
 
 class Druid(Entity):
-    def __init__(self, level, magic_level, armor=0, potions=0, x=0, y=0, z=GROUND_FLOOR):
+    def __init__(self, level, magic_level, armor=0, potions=0, x=0, y=0, z=GROUND_FLOOR,
+                 rod=None, sd_runes=0):
         level = max(8, int(level))
         super().__init__("Druid", x, y, z,
                          max_hp=145 + (level - 8) * 5,
@@ -83,6 +84,9 @@ class Druid(Entity):
         self.utamo_expires_ms = 0
         self.cooldowns = Cooldowns()
         self.next_regen_ms = REGEN_INTERVAL_MS
+        self.rod = rod if rod is None or self.level >= rod.level else None
+        self.sd_runes = max(0, int(sd_runes))
+        self.next_auto_attack_ms = 0
 
     @property
     def mana_ratio(self):
@@ -92,7 +96,28 @@ class Druid(Entity):
         return max(0, self.utamo_expires_ms - now_ms) if self.utamo_active else 0
 
     def can_cast(self, spell, now_ms):
-        return self.alive and self.mana >= spell.mana and self.cooldowns.ready(spell, now_ms)
+        return (self.alive and self.mana >= spell.mana and self.magic_level >= spell.min_magic_level
+                and self.cooldowns.ready(spell, now_ms))
+
+    def can_use_rune(self, rune, now_ms):
+        return (self.alive and self.sd_runes > 0 and self.magic_level >= rune.min_magic_level
+                and self.cooldowns.ready(rune, now_ms))
+
+    def use_rune(self, rune, now_ms):
+        self.sd_runes -= 1
+        self.cooldowns.trigger(rune, now_ms)
+
+    def auto_attack_remaining_ms(self, now_ms):
+        return max(0, self.next_auto_attack_ms - now_ms) if self.rod else 0
+
+    def try_auto_attack(self, now_ms):
+        """Pay for one rod attack if the weapon is ready. Returns the Rod or None."""
+        rod = self.rod
+        if rod is None or not self.alive or now_ms < self.next_auto_attack_ms or self.mana < rod.mana:
+            return None
+        self.mana -= rod.mana
+        self.next_auto_attack_ms = now_ms + rod.attack_interval_ms
+        return rod
 
     def pay_for(self, spell, now_ms):
         self.mana -= spell.mana

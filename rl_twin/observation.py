@@ -13,6 +13,7 @@ from .physics import VIEW_RANGE_X, VIEW_RANGE_Y, chebyshev
 
 VIEW_RADIUS = 4           # local window: (2 * VIEW_RADIUS + 1) ** 2 cells per channel
 POTION_NORMALIZER = 100   # potions_left saturates at this count
+RUNE_NORMALIZER = 100     # sd_runes_left saturates at this count
 STEP_MS_NORMALIZER = 1000.0
 MODIFIER_NORMALIZER = 200.0
 
@@ -20,11 +21,13 @@ ACTION_NAMES = [
     "up", "down", "left", "right",
     "up_left", "up_right", "down_left", "down_right",
     "exori_frigo", "exori_tera", "heal", "mana_potion", "wait",
+    "use_sd",
 ]
 ACTION_LABELS_PL = [
     "Góra", "Dół", "Lewo", "Prawo",
     "Ukos ↖", "Ukos ↗", "Ukos ↙", "Ukos ↘",
     "Exori Frigo (lód)", "Exori Tera (ziemia)", "Exura Gran", "Mikstura many", "Czekaj",
+    "Sudden Death (runa)",
 ]
 
 SCALAR_FEATURES = [
@@ -36,6 +39,8 @@ SCALAR_FEATURES = [
     "monster_attack_cooldown", "monster_in_spell_range", "monster_line_of_sight", "monster_adjacent",
     "monster_ice_modifier", "monster_earth_modifier", "monster_step_ms",
     "aggro_count", "waypoint_dx", "waypoint_dy",
+    "cooldown_sd", "sd_runes_left", "rod_equipped", "rod_cooldown",
+    "monster_in_rod_range", "monster_in_rune_range", "monster_death_modifier", "monster_rod_modifier",
 ]
 _WINDOW = [(dx, dy) for dy in range(-VIEW_RADIUS, VIEW_RADIUS + 1)
            for dx in range(-VIEW_RADIUS, VIEW_RADIUS + 1)]
@@ -57,6 +62,8 @@ class MonsterView:
     earth_modifier: int = 100
     step_ms: int = 300             # orthogonal step duration
     line_of_sight: bool = True
+    death_modifier: int = 100
+    rod_modifier: int = 100        # modifier for the element of the equipped rod
 
 
 @dataclass
@@ -71,10 +78,14 @@ class GameSnapshot:
     mana_ratio: float
     utamo_active: bool
     utamo_remaining_ratio: float
-    cooldown_ratios: dict          # keys: exori_frigo, exori_tera, heal, potion -> 0..1
+    cooldown_ratios: dict          # keys: exori_frigo, exori_tera, heal, potion, sd, rod -> 0..1
     potions_left: int
     player_step_ms: int
     spell_range: int
+    sd_runes: int = 0
+    rune_range: int = 7
+    rod_equipped: bool = False
+    rod_range: int = 0
     collision: np.ndarray = None   # (rows, cols) uint8 for the player's floor, 1 = blocked
     monsters: list = field(default_factory=list)   # alive MonsterView, any floor
     next_waypoint: tuple = None    # (x, y, z) or None
@@ -124,6 +135,16 @@ def encode_observation(snap):
     if snap.next_waypoint is not None and snap.next_waypoint[2] == snap.player_z:
         obs[26] = np.clip((snap.next_waypoint[0] - px) / VIEW_RANGE_X, -1, 1)
         obs[27] = np.clip((snap.next_waypoint[1] - py) / VIEW_RANGE_Y, -1, 1)
+    obs[28] = cds.get("sd", 0.0)
+    obs[29] = min(snap.sd_runes, RUNE_NORMALIZER) / RUNE_NORMALIZER
+    obs[30] = 1.0 if snap.rod_equipped else 0.0
+    obs[31] = cds.get("rod", 0.0)
+    if nearest is not None:
+        dist = chebyshev(px, py, nearest.x, nearest.y)
+        obs[32] = 1.0 if snap.rod_equipped and dist <= snap.rod_range else 0.0
+        obs[33] = 1.0 if dist <= snap.rune_range else 0.0
+        obs[34] = nearest.death_modifier / MODIFIER_NORMALIZER
+        obs[35] = nearest.rod_modifier / MODIFIER_NORMALIZER
 
     # Local window, out-of-bounds counts as blocked
     r = VIEW_RADIUS

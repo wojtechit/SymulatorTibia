@@ -67,8 +67,15 @@ python3 brainstem_example.py druid_policy.npz                                 # 
 - **Obrażenia:** fizyczne → pancerz `random(armor/2, armor − (armor%2 + 1))` → modyfikator żywiołu (%) → Utamo Vita → HP. Pancerz działa tylko na obrażenia fizyczne (tak jak w Tibii); czary żywiołów omijają go i liczą się wyłącznie z modyfikatorem.
 - **Czary:** Exori Frigo (lód), Exori Tera (ziemia) – zasięg 3, wymagają linii wzroku, CD 2 s + grupa ataku 2 s; Exura Gran – CD 1 s; Utamo Vita – 200 s; Great Mana Potion – 1 s exhaust.
 - **Potwory** widzą gracza w obszarze ekranu 15×11 (±7, ±5) na tym samym piętrze; tracą cel po wyjściu z ekranu.
-- **Akcje (13):** 4 kierunki, 4 ukosy, Exori Frigo, Exori Tera, Exura Gran, mikstura many, czekaj.
+- **Akcje (14):** 4 kierunki, 4 ukosy, Exori Frigo, Exori Tera, Exura Gran, mikstura many, czekaj, runa Sudden Death.
 - **Nagrody:** +100 zabicie, −5 za każde trafienie, −1000 śmierć, −1 za każde 500 ms czasu gry, −0.5 akcja niemożliwa, +2 punkt trasy.
+
+## Ekwipunek i runy (faza 3)
+
+- **Różdżki** (`rl_twin/data/items.json`, `ItemDatabase`): żywioł, obrażenia min–max, mana za atak, zasięg, wymagany poziom. Auto-atak co 2000 ms na własnym zegarze w pętli świata (działa też w trakcie kroku): cel = potwór w zasięgu i linii wzroku, pobiera manę (również z Utamo Vita), obrażenia × modyfikator żywiołu potwora. Za mało many = brak ataku.
+- **Sudden Death** (akcja `use_sd`): śmierć, `poziom·0.2 + ML·[4.3..6.8] + [32..44]`, zasięg 7 (na ekranie, z linią wzroku), wymaga ML 15, zużywa runę, wspólna grupa cooldownu ataku 2000 ms z Exori Frigo/Tera.
+- **Obserwacja (+8 cech):** cooldown SD, liczba run, czy jest różdżka, cooldown auto-ataku, czy cel jest w zasięgu różdżki/runy, modyfikator śmierci i żywiołu różdżki najbliższego potwora.
+- Wartości różdżek i wzór SD są przybliżone — zweryfikuj z TibiaWiki.
 
 ## MapParser (PNG → siatka)
 
@@ -85,9 +92,9 @@ Wartości w `monsters.json` pochodzą z ogólnej wiedzy o Tibii i są **przybli�
 
 ## Format eksportu modelu
 
-`druid_policy.npz`: `W0,b0` (190→128), `W1,b1` (128→128), `W2,b2` (128→13) + `metadata` (JSON: `feature_names`, `action_names`, stałe obserwacji, `env_config`). Inferencja: `argmax(relu(relu(x@W0+b0)@W1+b1)@W2+b2)`. Przy zainstalowanym PyTorch dodatkowo `druid_policy.pt` zgodny z `nn.Sequential(Linear, ReLU, Linear, ReLU, Linear)`.
+`druid_policy.npz`: `W0,b0` (198→128), `W1,b1` (128→128), `W2,b2` (128→14) + `metadata` (JSON: `feature_names`, `action_names`, stałe obserwacji, `env_config`). Inferencja: `argmax(relu(relu(x@W0+b0)@W1+b1)@W2+b2)`. Przy zainstalowanym PyTorch dodatkowo `druid_policy.pt` zgodny z `nn.Sequential(Linear, ReLU, Linear, ReLU, Linear)`.
 
-W `brainstem.py`: wypełnij `GameSnapshot`, przepuść przez `encode_observation()` z `rl_twin/observation.py` (nie przepisuj — kolejność cech musi się zgadzać) i podaj do `BrainstemPolicy.act_name()`. Modele z fazy 1 (119 cech, 7 akcji) nie pasują do fazy 2 — trzeba je wytrenować od nowa.
+W `brainstem.py`: wypełnij `GameSnapshot`, przepuść przez `encode_observation()` z `rl_twin/observation.py` (nie przepisuj — kolejność cech musi się zgadzać) i podaj do `BrainstemPolicy.act_name()`. Modele z wcześniejszych faz (119/7, 190/13) nie pasują do fazy 3 (198 cech, 14 akcji) — trzeba je wytrenować od nowa.
 
 ## Sprite'y (AssetManager)
 
