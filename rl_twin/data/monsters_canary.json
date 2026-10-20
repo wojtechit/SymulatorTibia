@@ -138,7 +138,12 @@
 "cooldown_ms":5000,
 "chance":30
 }
-]
+],
+"invisible":{
+"chance":25,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Abyssal Calamary",
@@ -234,7 +239,17 @@
 "spread":3,
 "name":"Earth wave"
 }
+],
+"summons":{
+"max":3,
+"list":[
+{
+"name":"Acid Blob",
+"chance":10,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Acolyte of Darkness",
@@ -353,6 +368,16 @@
 "element":"earth",
 "damage":2,
 "interval_ms":4000
+},
+"summons":{
+"max":1,
+"list":[
+{
+"name":"Skeleton",
+"chance":10,
+"interval_ms":2000
+}
+]
 }
 },
 {
@@ -406,6 +431,21 @@
 "element":"earth",
 "damage":2,
 "interval_ms":4000
+},
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Ghoul",
+"chance":10,
+"interval_ms":2000
+}
+]
+},
+"invisible":{
+"chance":10,
+"cooldown_ms":2000,
+"duration_ms":10000
 }
 },
 {
@@ -1434,6 +1474,16 @@
 "element":"earth",
 "damage":56,
 "interval_ms":4000
+},
+"summons":{
+"max":3,
+"list":[
+{
+"name":"Larva",
+"chance":10,
+"interval_ms":2000
+}
+]
 }
 },
 {
@@ -1546,6 +1596,20 @@
 {
 "cooldown_ms":2000,
 "chance":10,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":1,
+"name":"Fire pole"
+},
+{
+"cooldown_ms":2000,
+"chance":10,
 "element":"death",
 "damage":[
 300,
@@ -1600,6 +1664,20 @@
 },
 {
 "cooldown_ms":2000,
+"chance":10,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":1,
+"name":"Fire pole"
+},
+{
+"cooldown_ms":2000,
 "chance":20,
 "element":"death",
 "damage":[
@@ -1649,7 +1727,17 @@
 "cooldown_ms":2000,
 "chance":15
 }
+],
+"summons":{
+"max":1,
+"list":[
+{
+"name":"fire elemental",
+"chance":10,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Angry Plant",
@@ -2259,6 +2347,21 @@
 "element":"fire",
 "damage":6,
 "interval_ms":9000
+},
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Dworc Fleshhunter",
+"chance":30,
+"interval_ms":1000
+},
+{
+"name":"Terror Bird",
+"chance":30,
+"interval_ms":1000
+}
+]
 }
 },
 {
@@ -2758,6 +2861,20 @@
 "spells":[
 {
 "cooldown_ms":1000,
+"chance":8,
+"element":"energy",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":1,
+"name":"Energy pole"
+},
+{
+"cooldown_ms":1000,
 "chance":14,
 "element":"energy",
 "damage":[
@@ -2794,7 +2911,17 @@
 "cooldown_ms":4000,
 "chance":15
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Hyaena",
+"chance":30,
+"interval_ms":5000
+}
 ]
+}
 },
 {
 "name":"Arachir the Ancient One",
@@ -2854,7 +2981,22 @@
 "cooldown_ms":1000,
 "chance":12
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Lich",
+"chance":100,
+"interval_ms":9000
+}
 ]
+},
+"invisible":{
+"chance":25,
+"cooldown_ms":3000,
+"duration_ms":10000
+}
 },
 {
 "name":"Arachnophobica",
@@ -2946,7 +3088,17 @@
 "cooldown_ms":2000,
 "chance":5
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Overcharged Demon",
+"chance":12,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Arctic Faun",
@@ -3248,6 +3400,26 @@
 "element":"earth",
 "damage":55,
 "interval_ms":4000
+},
+"summons":{
+"max":4,
+"list":[
+{
+"name":"Ancient Scarab",
+"chance":100,
+"interval_ms":1000
+},
+{
+"name":"Green Djinn",
+"chance":100,
+"interval_ms":1000
+}
+]
+},
+"invisible":{
+"chance":7,
+"cooldown_ms":1000,
+"duration_ms":10000
 }
 },
 {
@@ -3566,7 +3738,12 @@
 "radius":1,
 "name":"Earth DoT"
 }
-]
+],
+"invisible":{
+"chance":10,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Avalanche",
@@ -3750,7 +3927,32 @@
 "cooldown_ms":2000,
 "chance":11
 }
+],
+"summons":{
+"max":10,
+"list":[
+{
+"name":"Rift Worm",
+"chance":100,
+"interval_ms":30
+},
+{
+"name":"Rift Brood",
+"chance":100,
+"interval_ms":30
+},
+{
+"name":"Rift Scythe",
+"chance":100,
+"interval_ms":30
+},
+{
+"name":"War Golem",
+"chance":100,
+"interval_ms":30
+}
 ]
+}
 },
 {
 "name":"Azerus2",
@@ -3809,7 +4011,32 @@
 "cooldown_ms":2000,
 "chance":11
 }
+],
+"summons":{
+"max":10,
+"list":[
+{
+"name":"Rift Worm",
+"chance":30,
+"interval_ms":3000
+},
+{
+"name":"Rift Brood",
+"chance":30,
+"interval_ms":3000
+},
+{
+"name":"Rift Scythe",
+"chance":30,
+"interval_ms":3000
+},
+{
+"name":"War Golem",
+"chance":30,
+"interval_ms":3000
+}
 ]
+}
 },
 {
 "name":"Azure Frog",
@@ -3995,7 +4222,17 @@
 "cooldown_ms":3000,
 "chance":15
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Elder Bloodjaw",
+"chance":20,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Baleful Bunny",
@@ -4294,7 +4531,17 @@
 "cooldown_ms":1000,
 "chance":25
 }
+],
+"summons":{
+"max":1,
+"list":[
+{
+"name":"War Wolf",
+"chance":40,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Barbarian Bloodwalker",
@@ -4365,7 +4612,17 @@
 "cooldown_ms":2000,
 "chance":40
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"War Wolf",
+"chance":10,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Barbarian Headsplitter",
@@ -4786,7 +5043,22 @@
 "cooldown_ms":1000,
 "chance":25
 }
+],
+"summons":{
+"max":1,
+"list":[
+{
+"name":"bazir",
+"chance":15,
+"interval_ms":1000
+}
 ]
+},
+"invisible":{
+"chance":4,
+"cooldown_ms":1000,
+"duration_ms":10000
+}
 },
 {
 "name":"Bear",
@@ -4956,7 +5228,12 @@
 "cooldown_ms":2000,
 "chance":30
 }
-]
+],
+"invisible":{
+"chance":10,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Bibby Bloodbath",
@@ -5009,7 +5286,12 @@
 "radius":1,
 "name":"spowolnienie"
 }
-]
+],
+"invisible":{
+"chance":15,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Big Boss Trolliver",
@@ -5031,7 +5313,17 @@
 "holy":100,
 "death":100
 },
-"loot_value":32
+"loot_value":32,
+"summons":{
+"max":5,
+"list":[
+{
+"name":"Troll Champion",
+"chance":30,
+"interval_ms":2000
+}
+]
+}
 },
 {
 "name":"Biting Book",
@@ -5283,7 +5575,17 @@
 "radius":3,
 "name":"Death ball"
 }
+],
+"summons":{
+"max":1,
+"list":[
+{
+"name":"Skeleton Elite Warrior",
+"chance":10,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Black Vixen",
@@ -5343,7 +5645,22 @@
 "cooldown_ms":4000,
 "chance":15
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"werefox",
+"chance":20,
+"interval_ms":2000
+}
 ]
+},
+"invisible":{
+"chance":15,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Blaze of Burning Hatred",
@@ -5429,6 +5746,20 @@
 "range":7,
 "radius":5,
 "name":"Fire ball"
+},
+{
+"cooldown_ms":1000,
+"chance":15,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":1,
+"name":"Fire pole"
 }
 ]
 },
@@ -5612,6 +5943,20 @@
 "range":6,
 "radius":1,
 "name":"Fire DoT"
+},
+{
+"cooldown_ms":1000,
+"chance":15,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":3,
+"name":"Fire pole"
 }
 ]
 },
@@ -5971,7 +6316,17 @@
 "cooldown_ms":4000,
 "chance":15
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Wereboar",
+"chance":20,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Bloodpaw",
@@ -6530,7 +6885,17 @@
 "name":"Death ball"
 }
 ],
-"target_distance":4
+"target_distance":4,
+"summons":{
+"max":6,
+"list":[
+{
+"name":"Skeleton",
+"chance":20,
+"interval_ms":2000
+}
+]
+}
 },
 {
 "name":"Bonny Bunny",
@@ -6702,7 +7067,17 @@
 "cooldown_ms":2000,
 "chance":25
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Demon Skeleton",
+"chance":40,
+"interval_ms":4000
+}
 ]
+}
 },
 {
 "name":"Boogy",
@@ -7206,7 +7581,17 @@
 "cooldown_ms":2000,
 "chance":15
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Vampire",
+"chance":10,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Branchy Crawler",
@@ -7685,7 +8070,17 @@
 "cooldown_ms":3000,
 "chance":20
 }
+],
+"summons":{
+"max":5,
+"list":[
+{
+"name":"neutral deepling warrior",
+"chance":70,
+"interval_ms":1000
+}
 ]
+}
 },
 {
 "name":"Broodrider Inferniarch",
@@ -8471,6 +8866,20 @@
 "range":1,
 "radius":1,
 "name":"Earth ball"
+},
+{
+"cooldown_ms":2000,
+"chance":10,
+"element":"earth",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":1,
+"radius":1,
+"name":"Earth pole"
 }
 ],
 "run_health":80
@@ -9368,6 +9777,20 @@
 "chance":10,
 "element":"earth",
 "damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":1,
+"name":"Earth pole"
+},
+{
+"cooldown_ms":2000,
+"chance":10,
+"element":"earth",
+"damage":[
 40,
 70
 ],
@@ -9381,6 +9804,16 @@
 "element":"earth",
 "damage":160,
 "interval_ms":4000
+},
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Poison Spider",
+"chance":10,
+"interval_ms":2000
+}
+]
 }
 },
 {
@@ -9679,7 +10112,12 @@
 "name":"Ice wave"
 }
 ],
-"target_distance":4
+"target_distance":4,
+"invisible":{
+"chance":15,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Charged Anomaly",
@@ -10258,7 +10696,17 @@
 "radius":1,
 "name":"Death ball"
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Lizard Dragon Priest",
+"chance":10,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Chocolate Blob",
@@ -11374,7 +11822,12 @@
 "cooldown_ms":2000,
 "chance":16
 }
-]
+],
+"invisible":{
+"chance":12,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Corym Charlatan",
@@ -11764,7 +12217,17 @@
 "cooldown_ms":2000,
 "chance":14
 }
+],
+"summons":{
+"max":4,
+"list":[
+{
+"name":"Soulless Minion",
+"chance":70,
+"interval_ms":5500
+}
 ]
+}
 },
 {
 "name":"Countess Sorrow",
@@ -11817,6 +12280,26 @@
 "element":"earth",
 "damage":920,
 "interval_ms":4000
+},
+"summons":{
+"max":3,
+"list":[
+{
+"name":"Phantasm",
+"chance":7,
+"interval_ms":2000
+},
+{
+"name":"Phantasm Summon",
+"chance":7,
+"interval_ms":2000
+}
+]
+},
+"invisible":{
+"chance":15,
+"cooldown_ms":2000,
+"duration_ms":10000
 }
 },
 {
@@ -13878,7 +14361,12 @@
 "cooldown_ms":2000,
 "chance":20
 }
-]
+],
+"invisible":{
+"chance":10,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Dark Monk",
@@ -14009,7 +14497,12 @@
 "cooldown_ms":2000,
 "chance":25
 }
-]
+],
+"invisible":{
+"chance":15,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Dark Torturer",
@@ -14116,7 +14609,17 @@
 "cooldown_ms":4000,
 "chance":15
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Gloom Wolf",
+"chance":20,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Darklight Construct",
@@ -14757,7 +15260,17 @@
 "cooldown_ms":2000,
 "chance":5
 }
+],
+"summons":{
+"max":3,
+"list":[
+{
+"name":"Death Blob",
+"chance":10,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Death Dragon",
@@ -14964,7 +15477,27 @@
 "cooldown_ms":2000,
 "chance":20
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Lesser Death Minion",
+"chance":30,
+"interval_ms":2000
+},
+{
+"name":"Superior Death Minion",
+"chance":30,
+"interval_ms":2000
+},
+{
+"name":"Greater Death Minion",
+"chance":30,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Deathbine",
@@ -16100,6 +16633,20 @@
 "name":"Fire ball"
 },
 {
+"cooldown_ms":1000,
+"chance":10,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":6,
+"name":"Fire pole"
+},
+{
 "cooldown_ms":4000,
 "chance":20,
 "element":"fire",
@@ -16123,7 +16670,17 @@
 "cooldown_ms":1000,
 "chance":25
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Dragon",
+"chance":17,
+"interval_ms":1000
+}
 ]
+}
 },
 {
 "name":"Demon",
@@ -16159,6 +16716,20 @@
 "range":7,
 "radius":7,
 "name":"Fire ball"
+},
+{
+"cooldown_ms":2000,
+"chance":10,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":1,
+"name":"Fire pole"
 },
 {
 "cooldown_ms":2000,
@@ -16211,7 +16782,17 @@
 "cooldown_ms":2000,
 "chance":15
 }
+],
+"summons":{
+"max":1,
+"list":[
+{
+"name":"fire elemental",
+"chance":10,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Demon Blood",
@@ -16369,7 +16950,17 @@
 "cooldown_ms":2000,
 "chance":15
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"energy elemental",
+"chance":10,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Demon Parrot",
@@ -16703,7 +17294,17 @@
 "cooldown_ms":2000,
 "chance":3
 }
+],
+"summons":{
+"max":6,
+"list":[
+{
+"name":"Demon",
+"chance":11,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Destroyed Pillar",
@@ -16913,7 +17514,17 @@
 "cooldown_ms":1000,
 "chance":20
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"demon skeleton",
+"chance":6,
+"interval_ms":1000
+}
 ]
+}
 },
 {
 "name":"Diabolic Imp",
@@ -16980,6 +17591,11 @@
 "element":"earth",
 "damage":160,
 "interval_ms":4000
+},
+"invisible":{
+"chance":10,
+"cooldown_ms":2000,
+"duration_ms":10000
 }
 },
 {
@@ -17139,7 +17755,22 @@
 "cooldown_ms":1000,
 "chance":12
 }
+],
+"summons":{
+"max":3,
+"list":[
+{
+"name":"Banshee",
+"chance":50,
+"interval_ms":4500
+}
 ]
+},
+"invisible":{
+"chance":25,
+"cooldown_ms":3000,
+"duration_ms":10000
+}
 },
 {
 "name":"Dipthrah",
@@ -17176,6 +17807,16 @@
 "element":"earth",
 "damage":65,
 "interval_ms":4000
+},
+"summons":{
+"max":4,
+"list":[
+{
+"name":"Priestess",
+"chance":15,
+"interval_ms":2000
+}
+]
 }
 },
 {
@@ -17331,7 +17972,17 @@
 "name":"Physical ball"
 }
 ],
-"run_health":50
+"run_health":50,
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Pirate Marauder",
+"chance":30,
+"interval_ms":4000
+}
+]
+}
 },
 {
 "name":"Diseased Bill",
@@ -17892,7 +18543,17 @@
 "cooldown_ms":2000,
 "chance":15
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Zombie",
+"chance":10,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Dog",
@@ -18484,6 +19145,20 @@
 },
 {
 "cooldown_ms":2000,
+"chance":10,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":4,
+"name":"Fire pole"
+},
+{
+"cooldown_ms":2000,
 "chance":22,
 "element":"fire",
 "damage":[
@@ -18555,6 +19230,20 @@
 "range":7,
 "radius":4,
 "name":"Fire ball"
+},
+{
+"cooldown_ms":2000,
+"chance":10,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":3,
+"name":"Fire pole"
 }
 ],
 "run_health":30,
@@ -18616,6 +19305,20 @@
 "length":8,
 "spread":3,
 "name":"Fire wave"
+},
+{
+"cooldown_ms":2000,
+"chance":10,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":3,
+"name":"Fire pole"
 }
 ],
 "run_health":300,
@@ -18991,7 +19694,17 @@
 "cooldown_ms":2000,
 "chance":15
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Death Blob",
+"chance":10,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Draken Elite",
@@ -19178,7 +19891,12 @@
 "cooldown_ms":2000,
 "chance":15
 }
-]
+],
+"invisible":{
+"chance":10,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Draken Warmaster",
@@ -20017,7 +20735,27 @@
 "cooldown_ms":4000,
 "chance":40
 }
+],
+"summons":{
+"max":1,
+"list":[
+{
+"name":"preceptor lazare",
+"chance":10,
+"interval_ms":8000
+},
+{
+"name":"grand commander soeren",
+"chance":10,
+"interval_ms":8000
+},
+{
+"name":"grand chaplain gaunder",
+"chance":10,
+"interval_ms":8000
+}
 ]
+}
 },
 {
 "name":"Dryad",
@@ -20127,7 +20865,17 @@
 "cooldown_ms":2000,
 "chance":14
 }
+],
+"summons":{
+"max":4,
+"list":[
+{
+"name":"Soul Scourge",
+"chance":20,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Duskbringer",
@@ -20504,6 +21252,20 @@
 "range":6,
 "radius":1,
 "name":"Earth ball"
+},
+{
+"cooldown_ms":2000,
+"chance":10,
+"element":"earth",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":1,
+"name":"Earth pole"
 }
 ],
 "target_distance":4,
@@ -20517,7 +21279,12 @@
 "cooldown_ms":2000,
 "chance":20
 }
-]
+],
+"invisible":{
+"chance":15,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Earl Osam",
@@ -20576,7 +21343,17 @@
 "cooldown_ms":2000,
 "chance":35
 }
+],
+"summons":{
+"max":4,
+"list":[
+{
+"name":"Frozen Soul",
+"chance":50,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Earth Elemental",
@@ -21093,7 +21870,17 @@
 "cooldown_ms":2000,
 "chance":15
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"green djinn",
+"chance":10,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Egg",
@@ -21151,6 +21938,20 @@
 "range":5,
 "radius":1,
 "name":"Fire ball"
+},
+{
+"cooldown_ms":2000,
+"chance":10,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":5,
+"radius":1,
+"name":"Fire pole"
 }
 ],
 "target_distance":4,
@@ -21297,7 +22098,22 @@
 "name":"Earth ball"
 }
 ],
-"target_distance":4
+"target_distance":4,
+"summons":{
+"max":6,
+"list":[
+{
+"name":"Gazer",
+"chance":10,
+"interval_ms":2000
+},
+{
+"name":"Crypt Shambler",
+"chance":15,
+"interval_ms":2000
+}
+]
+}
 },
 {
 "name":"Elder Mummy",
@@ -22035,6 +22851,20 @@
 "spells":[
 {
 "cooldown_ms":2000,
+"chance":20,
+"element":"energy",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":2,
+"name":"Energy pole"
+},
+{
+"cooldown_ms":2000,
 "chance":25,
 "element":"energy",
 "damage":[
@@ -22057,7 +22887,17 @@
 "cooldown_ms":2000,
 "chance":20
 }
+],
+"summons":{
+"max":1,
+"list":[
+{
+"name":"Golden Servant",
+"chance":50,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Energuardian of Tales",
@@ -22355,6 +23195,26 @@
 "element":"earth",
 "damage":4,
 "interval_ms":4000
+},
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Crypt Shambler",
+"chance":10,
+"interval_ms":2000
+},
+{
+"name":"Ghost",
+"chance":10,
+"interval_ms":2000
+}
+]
+},
+"invisible":{
+"chance":15,
+"cooldown_ms":2000,
+"duration_ms":10000
 }
 },
 {
@@ -22643,6 +23503,20 @@
 },
 {
 "cooldown_ms":2000,
+"chance":14,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":1,
+"name":"Fire pole"
+},
+{
+"cooldown_ms":2000,
 "chance":10,
 "element":"death",
 "damage":[
@@ -22831,7 +23705,37 @@
 "holy":0,
 "death":0
 },
-"loot_value":0
+"loot_value":0,
+"summons":{
+"max":5,
+"list":[
+{
+"name":"Dread Minion",
+"chance":20,
+"interval_ms":2000
+},
+{
+"name":"Dread Minion",
+"chance":30,
+"interval_ms":2000
+},
+{
+"name":"Dread Minion",
+"chance":20,
+"interval_ms":2000
+},
+{
+"name":"Dread Minion",
+"chance":30,
+"interval_ms":2000
+},
+{
+"name":"Dread Minion",
+"chance":20,
+"interval_ms":2000
+}
+]
+}
 },
 {
 "name":"Eshtaba the Conjurer",
@@ -22853,7 +23757,37 @@
 "holy":100,
 "death":100
 },
-"loot_value":0
+"loot_value":0,
+"summons":{
+"max":5,
+"list":[
+{
+"name":"Dread Minion",
+"chance":20,
+"interval_ms":2000
+},
+{
+"name":"Dread Minion",
+"chance":30,
+"interval_ms":2000
+},
+{
+"name":"Dread Minion",
+"chance":20,
+"interval_ms":2000
+},
+{
+"name":"Dread Minion",
+"chance":30,
+"interval_ms":2000
+},
+{
+"name":"Dread Minion",
+"chance":20,
+"interval_ms":2000
+}
+]
+}
 },
 {
 "name":"Esmeralda",
@@ -23223,7 +24157,17 @@
 "cooldown_ms":2000,
 "chance":30
 }
+],
+"summons":{
+"max":3,
+"list":[
+{
+"name":"vampire",
+"chance":40,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Evil Prospector",
@@ -23382,7 +24326,17 @@
 "cooldown_ms":2000,
 "chance":20
 }
+],
+"summons":{
+"max":3,
+"list":[
+{
+"name":"Evil Sheep",
+"chance":30,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Execowtioner",
@@ -23773,7 +24727,17 @@
 "cooldown_ms":2000,
 "chance":15
 }
+],
+"summons":{
+"max":3,
+"list":[
+{
+"name":"blue djinn",
+"chance":10,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Falcon Knight",
@@ -24394,7 +25358,17 @@
 "cooldown_ms":2000,
 "chance":15
 }
+],
+"summons":{
+"max":3,
+"list":[
+{
+"name":"War Wolf",
+"chance":13,
+"interval_ms":1000
+}
 ]
+}
 },
 {
 "name":"Feroxa",
@@ -24762,7 +25736,22 @@
 "cooldown_ms":2000,
 "chance":10
 }
+],
+"summons":{
+"max":4,
+"list":[
+{
+"name":"Demon",
+"chance":12,
+"interval_ms":3000
+}
 ]
+},
+"invisible":{
+"chance":20,
+"cooldown_ms":4000,
+"duration_ms":10000
+}
 },
 {
 "name":"Ferumbras Essence",
@@ -24904,7 +25893,22 @@
 "cooldown_ms":2000,
 "chance":3
 }
+],
+"summons":{
+"max":3,
+"list":[
+{
+"name":"Demon",
+"chance":100,
+"interval_ms":1000
+}
 ]
+},
+"invisible":{
+"chance":10,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Ferumbras Soul Splinter",
@@ -24985,7 +25989,17 @@
 "cooldown_ms":2000,
 "chance":3
 }
+],
+"summons":{
+"max":3,
+"list":[
+{
+"name":"Demon",
+"chance":11,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Fetter",
@@ -25117,7 +26131,12 @@
 "cooldown_ms":2000,
 "chance":20
 }
-]
+],
+"invisible":{
+"chance":8,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Fiery Blood",
@@ -25139,7 +26158,23 @@
 "holy":100,
 "death":0
 },
-"loot_value":0
+"loot_value":0,
+"spells":[
+{
+"cooldown_ms":2000,
+"chance":25,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":3,
+"name":"Fire pole"
+}
+]
 },
 {
 "name":"Fiery Heart",
@@ -25291,6 +26326,20 @@
 "range":7,
 "radius":2,
 "name":"Fire ball"
+},
+{
+"cooldown_ms":2000,
+"chance":25,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":1,
+"name":"Fire pole"
 }
 ]
 },
@@ -25316,6 +26365,20 @@
 },
 "loot_value":119,
 "spells":[
+{
+"cooldown_ms":2000,
+"chance":15,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":4,
+"name":"Fire pole"
+},
 {
 "cooldown_ms":1000,
 "chance":15,
@@ -25382,6 +26445,20 @@
 "range":7,
 "radius":1,
 "name":"Fire ball"
+},
+{
+"cooldown_ms":2000,
+"chance":10,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":1,
+"name":"Fire pole"
 }
 ]
 },
@@ -25492,6 +26569,20 @@
 "range":7,
 "radius":5,
 "name":"Fire ball"
+},
+{
+"cooldown_ms":1000,
+"chance":15,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":1,
+"name":"Fire pole"
 }
 ]
 },
@@ -25675,7 +26766,17 @@
 "radius":1,
 "name":"Earth DoT"
 }
+],
+"summons":{
+"max":3,
+"list":[
+{
+"name":"Larva",
+"chance":10,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Fleshslicer",
@@ -25871,7 +26972,17 @@
 "length":4,
 "name":"Fire beam"
 }
+],
+"summons":{
+"max":1,
+"list":[
+{
+"name":"Lava Lurker Attendant",
+"chance":70,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Flying Book",
@@ -27208,7 +28319,17 @@
 "holy":100,
 "death":100
 },
-"loot_value":74
+"loot_value":74,
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Mechanical Fighter",
+"chance":90,
+"interval_ms":2000
+}
+]
+}
 },
 {
 "name":"Fury",
@@ -27377,7 +28498,17 @@
 "name":"Death ball"
 }
 ],
-"run_health":366
+"run_health":366,
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Draken Warmaster",
+"chance":10,
+"interval_ms":2000
+}
+]
+}
 },
 {
 "name":"Furyosa",
@@ -27461,7 +28592,22 @@
 "cooldown_ms":7000,
 "chance":20
 }
+],
+"summons":{
+"max":4,
+"list":[
+{
+"name":"Fury",
+"chance":10,
+"interval_ms":2000
+}
 ]
+},
+"invisible":{
+"chance":10,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Gaffir",
@@ -27549,7 +28695,17 @@
 "radius":1,
 "name":"Earth ball"
 }
+],
+"summons":{
+"max":1,
+"list":[
+{
+"name":"Black Cobra",
+"chance":10,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Gang Member",
@@ -27976,7 +29132,22 @@
 "cooldown_ms":1000,
 "chance":15
 }
+],
+"summons":{
+"max":4,
+"list":[
+{
+"name":"Minotaur Archer",
+"chance":15,
+"interval_ms":1000
+},
+{
+"name":"Minotaur Guard",
+"chance":12,
+"interval_ms":1000
+}
 ]
+}
 },
 {
 "name":"Generator",
@@ -28230,7 +29401,17 @@
 "cooldown_ms":3000,
 "chance":35
 }
+],
+"summons":{
+"max":4,
+"list":[
+{
+"name":"Deathslicer",
+"chance":20,
+"interval_ms":4000
+}
 ]
+}
 },
 {
 "name":"Ghost",
@@ -28496,6 +29677,20 @@
 "chance":10,
 "element":"earth",
 "damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":1,
+"name":"Earth pole"
+},
+{
+"cooldown_ms":2000,
+"chance":10,
+"element":"earth",
+"damage":[
 40,
 70
 ],
@@ -28509,6 +29704,16 @@
 "element":"earth",
 "damage":160,
 "interval_ms":4000
+},
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Poison Spider",
+"chance":10,
+"interval_ms":2000
+}
+]
 }
 },
 {
@@ -28949,6 +30154,16 @@
 "element":"earth",
 "damage":280,
 "interval_ms":4000
+},
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Glooth Blob",
+"chance":6,
+"interval_ms":2000
+}
+]
 }
 },
 {
@@ -29706,7 +30921,12 @@
 "name":"Physical ball"
 }
 ],
-"run_health":15
+"run_health":15,
+"invisible":{
+"chance":10,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Goblin Leader",
@@ -31348,7 +32568,17 @@
 "cooldown_ms":1000,
 "chance":17
 }
+],
+"summons":{
+"max":4,
+"list":[
+{
+"name":"dragon hatchlings",
+"chance":40,
+"interval_ms":4000
+}
 ]
+}
 },
 {
 "name":"Grandfather Tridian",
@@ -31409,7 +32639,27 @@
 "cooldown_ms":2000,
 "chance":25
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Crypt Shambler",
+"chance":10,
+"interval_ms":2000
+},
+{
+"name":"Ghost",
+"chance":10,
+"interval_ms":2000
+}
 ]
+},
+"invisible":{
+"chance":15,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Grave Guard",
@@ -31523,6 +32773,11 @@
 "element":"earth",
 "damage":180,
 "interval_ms":4000
+},
+"invisible":{
+"chance":15,
+"cooldown_ms":2000,
+"duration_ms":10000
 }
 },
 {
@@ -31594,7 +32849,17 @@
 "cooldown_ms":3000,
 "chance":15
 }
+],
+"summons":{
+"max":4,
+"list":[
+{
+"name":"Bonebeast",
+"chance":10,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Greater Canopic Jar",
@@ -31626,7 +32891,17 @@
 "cooldown_ms":2000,
 "chance":50
 }
+],
+"summons":{
+"max":1,
+"list":[
+{
+"name":"Elder Mummy",
+"chance":20,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Greater Death Minion",
@@ -32562,6 +33837,11 @@
 "element":"earth",
 "damage":380,
 "interval_ms":4000
+},
+"invisible":{
+"chance":10,
+"cooldown_ms":2000,
+"duration_ms":10000
 }
 },
 {
@@ -33267,6 +34547,20 @@
 "chance":10,
 "element":"fire",
 "damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":3,
+"name":"Fire pole"
+},
+{
+"cooldown_ms":2000,
+"chance":10,
+"element":"fire",
+"damage":[
 392,
 1500
 ],
@@ -33697,7 +34991,17 @@
 "cooldown_ms":2000,
 "chance":15
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"War Wolf",
+"chance":100,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Heoni",
@@ -33804,7 +35108,12 @@
 "radius":1,
 "name":"Holy ball"
 }
-]
+],
+"invisible":{
+"chance":20,
+"cooldown_ms":5000,
+"duration_ms":10000
+}
 },
 {
 "name":"Hero",
@@ -33974,7 +35283,22 @@
 "cooldown_ms":2000,
 "chance":15
 }
+],
+"summons":{
+"max":1,
+"list":[
+{
+"name":"humorless fungus",
+"chance":10,
+"interval_ms":2000
+}
 ]
+},
+"invisible":{
+"chance":5,
+"cooldown_ms":2000,
+"duration_ms":2000
+}
 },
 {
 "name":"High Voltage Elemental",
@@ -34131,7 +35455,17 @@
 "cooldown_ms":2000,
 "chance":15
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Spidris Elite Summon",
+"chance":40,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Honey Elemental",
@@ -34288,7 +35622,17 @@
 "cooldown_ms":2000,
 "chance":35
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Defiler",
+"chance":12,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Horestis",
@@ -34378,7 +35722,17 @@
 "cooldown_ms":2000,
 "chance":15
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Sandstone Scorpion",
+"chance":12,
+"interval_ms":1000
+}
 ]
+}
 },
 {
 "name":"Horrible Dream",
@@ -34425,7 +35779,17 @@
 "cooldown_ms":2000,
 "chance":5
 }
+],
+"summons":{
+"max":3,
+"list":[
+{
+"name":"Death Blob",
+"chance":10,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Horse",
@@ -34639,6 +36003,20 @@
 "chance":10,
 "element":"earth",
 "damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":4,
+"radius":1,
+"name":"Earth pole"
+},
+{
+"cooldown_ms":2000,
+"chance":10,
+"element":"earth",
+"damage":[
 500,
 1000
 ],
@@ -34758,7 +36136,12 @@
 "cooldown_ms":2000,
 "chance":5
 }
-]
+],
+"invisible":{
+"chance":5,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Hunter",
@@ -35335,7 +36718,17 @@
 "cooldown_ms":3000,
 "chance":10
 }
+],
+"summons":{
+"max":8,
+"list":[
+{
+"name":"Mushroom",
+"chance":30,
+"interval_ms":5000
+}
 ]
+}
 },
 {
 "name":"Icicle",
@@ -35854,7 +37247,22 @@
 "spread":3,
 "name":"spowolnienie"
 }
+],
+"summons":{
+"max":6,
+"list":[
+{
+"name":"Parasite",
+"chance":10,
+"interval_ms":2000
+}
 ]
+},
+"invisible":{
+"chance":10,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Infernal Demon",
@@ -36083,6 +37491,20 @@
 },
 {
 "cooldown_ms":2000,
+"chance":15,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":3,
+"name":"Fire pole"
+},
+{
+"cooldown_ms":2000,
 "chance":10,
 "element":"fire",
 "damage":[
@@ -36118,7 +37540,22 @@
 "cooldown_ms":2000,
 "chance":15
 }
+],
+"summons":{
+"max":1,
+"list":[
+{
+"name":"fire elemental",
+"chance":20,
+"interval_ms":2000
+}
 ]
+},
+"invisible":{
+"chance":15,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Infernatil",
@@ -36184,6 +37621,20 @@
 },
 {
 "cooldown_ms":1000,
+"chance":4,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":8,
+"radius":1,
+"name":"Fire pole"
+},
+{
+"cooldown_ms":1000,
 "chance":34,
 "element":"fire",
 "damage":[
@@ -36240,7 +37691,17 @@
 "cooldown_ms":1000,
 "chance":25
 }
+],
+"summons":{
+"max":4,
+"list":[
+{
+"name":"hellfire fighter",
+"chance":8,
+"interval_ms":1000
+}
 ]
+}
 },
 {
 "name":"Ink Blob",
@@ -36970,7 +38431,12 @@
 "name":"spowolnienie"
 }
 ],
-"run_health":260
+"run_health":260,
+"invisible":{
+"chance":20,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Island Troll",
@@ -37556,7 +39022,12 @@
 "holy":100,
 "death":100
 },
-"loot_value":0
+"loot_value":0,
+"invisible":{
+"chance":15,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Jesse the Wicked",
@@ -37859,6 +39330,20 @@
 "length":9,
 "spread":3,
 "name":"Fire wave"
+},
+{
+"cooldown_ms":2000,
+"chance":10,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":7,
+"name":"Fire pole"
 }
 ],
 "run_health":800,
@@ -37871,7 +39356,17 @@
 "cooldown_ms":2000,
 "chance":25
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Dragon Lord",
+"chance":20,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Katex Blood Tongue",
@@ -37921,7 +39416,17 @@
 "radius":1,
 "name":"Death ball"
 }
+],
+"summons":{
+"max":1,
+"list":[
+{
+"name":"werehyaena",
+"chance":50,
+"interval_ms":5000
+}
 ]
+}
 },
 {
 "name":"Kerberos",
@@ -38116,7 +39621,22 @@
 "holy":100,
 "death":100
 },
-"loot_value":23
+"loot_value":23,
+"summons":{
+"max":2,
+"list":[
+{
+"name":"killer rabbit",
+"chance":30,
+"interval_ms":2000
+}
+]
+},
+"invisible":{
+"chance":30,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"King Zelos",
@@ -38471,6 +39991,16 @@
 "element":"earth",
 "damage":300,
 "interval_ms":4000
+},
+"summons":{
+"max":1,
+"list":[
+{
+"name":"bonebeast",
+"chance":21,
+"interval_ms":1000
+}
+]
 }
 },
 {
@@ -38515,6 +40045,16 @@
 "element":"earth",
 "damage":5,
 "interval_ms":4000
+},
+"summons":{
+"max":1,
+"list":[
+{
+"name":"Weakened Demon",
+"chance":20,
+"interval_ms":2000
+}
+]
 }
 },
 {
@@ -38631,7 +40171,17 @@
 "radius":1,
 "name":"Energy ball"
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Green Djinn",
+"chance":20,
+"interval_ms":5000
+}
 ]
+}
 },
 {
 "name":"Kroazur",
@@ -38911,6 +40461,20 @@
 "spells":[
 {
 "cooldown_ms":2000,
+"chance":10,
+"element":"earth",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":4,
+"radius":1,
+"name":"Earth pole"
+},
+{
+"cooldown_ms":2000,
 "chance":15,
 "element":"death",
 "damage":[
@@ -38937,7 +40501,12 @@
 "name":"Earth DoT"
 }
 ],
-"run_health":30
+"run_health":30,
+"invisible":{
+"chance":10,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Larva",
@@ -39494,7 +41063,22 @@
 "holy":100,
 "death":100
 },
-"loot_value":0
+"loot_value":0,
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Barkless Fanatic",
+"chance":20,
+"interval_ms":2000
+},
+{
+"name":"Barkless Fanatic",
+"chance":30,
+"interval_ms":2000
+}
+]
+}
 },
 {
 "name":"Lesser Death Minion",
@@ -39691,7 +41275,17 @@
 "cooldown_ms":6000,
 "chance":65
 }
+],
+"summons":{
+"max":4,
+"list":[
+{
+"name":"Pirate Cutthroat",
+"chance":50,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Leviathan",
@@ -39900,7 +41494,17 @@
 "cooldown_ms":2000,
 "chance":15
 }
+],
+"summons":{
+"max":4,
+"list":[
+{
+"name":"Bonebeast",
+"chance":10,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Liodile",
@@ -40100,7 +41704,27 @@
 "radius":1,
 "name":"Holy ball"
 }
+],
+"summons":{
+"max":6,
+"list":[
+{
+"name":"lion archer",
+"chance":0,
+"interval_ms":600000
+},
+{
+"name":"lion knight",
+"chance":0,
+"interval_ms":600000
+},
+{
+"name":"lion warlock",
+"chance":0,
+"interval_ms":600000
+}
 ]
+}
 },
 {
 "name":"Lion Knight",
@@ -40497,7 +42121,22 @@
 "cooldown_ms":2000,
 "chance":30
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Dragon Hatchling",
+"chance":20,
+"interval_ms":2000
+}
 ]
+},
+"invisible":{
+"chance":15,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Lizard High Guard",
@@ -40751,7 +42390,22 @@
 "cooldown_ms":2000,
 "chance":50
 }
+],
+"summons":{
+"max":6,
+"list":[
+{
+"name":"cobra",
+"chance":20,
+"interval_ms":2000
+}
 ]
+},
+"invisible":{
+"chance":10,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Lizard Templar",
@@ -40943,7 +42597,17 @@
 "radius":1,
 "name":"Physical ball"
 }
+],
+"summons":{
+"max":5,
+"list":[
+{
+"name":"demon blood",
+"chance":10,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Lokathmor Stuck",
@@ -41055,7 +42719,17 @@
 "length":7,
 "name":"Earth beam"
 }
+],
+"summons":{
+"max":5,
+"list":[
+{
+"name":"Condensed Sins",
+"chance":50,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Lord of the Elements",
@@ -41087,7 +42761,32 @@
 "cooldown_ms":1000,
 "chance":25
 }
+],
+"summons":{
+"max":4,
+"list":[
+{
+"name":"Blistering Fire Elemental",
+"chance":50,
+"interval_ms":4000
+},
+{
+"name":"Jagged Earth Elemental",
+"chance":50,
+"interval_ms":4000
+},
+{
+"name":"Roaring Water Elemental",
+"chance":50,
+"interval_ms":4000
+},
+{
+"name":"Overcharged Energy Elemental",
+"chance":50,
+"interval_ms":4000
+}
 ]
+}
 },
 {
 "name":"Lost Basher",
@@ -41358,7 +43057,12 @@
 "cooldown_ms":2000,
 "chance":15
 }
-]
+],
+"invisible":{
+"chance":15,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Lost Soul",
@@ -41472,7 +43176,12 @@
 "cooldown_ms":2000,
 "chance":5
 }
-]
+],
+"invisible":{
+"chance":10,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Lost Time",
@@ -41749,7 +43458,12 @@
 "cooldown_ms":2000,
 "chance":16
 }
-]
+],
+"invisible":{
+"chance":12,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Lovely Yielothax",
@@ -41994,6 +43708,20 @@
 "name":"Fire ball"
 },
 {
+"cooldown_ms":1600,
+"chance":20,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":3,
+"name":"Fire pole"
+},
+{
 "cooldown_ms":2000,
 "chance":15,
 "element":"energy",
@@ -42017,7 +43745,17 @@
 "cooldown_ms":2000,
 "chance":25
 }
+],
+"summons":{
+"max":1,
+"list":[
+{
+"name":"Golden Servant",
+"chance":10,
+"interval_ms":1000
+}
 ]
+}
 },
 {
 "name":"Mad Scientist",
@@ -42365,7 +44103,12 @@
 }
 ],
 "target_distance":4,
-"run_health":300
+"run_health":300,
+"invisible":{
+"chance":5,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Magma Crystal",
@@ -42507,6 +44250,20 @@
 "name":"Fire ball"
 },
 {
+"cooldown_ms":1000,
+"chance":12,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":4,
+"radius":1,
+"name":"Fire pole"
+},
+{
 "cooldown_ms":2000,
 "chance":13,
 "element":"fire",
@@ -42535,6 +44292,16 @@
 "element":"earth",
 "damage":65,
 "interval_ms":4000
+},
+"summons":{
+"max":4,
+"list":[
+{
+"name":"Fire Elemental",
+"chance":30,
+"interval_ms":2000
+}
+]
 }
 },
 {
@@ -42953,7 +44720,17 @@
 "cooldown_ms":2000,
 "chance":25
 }
+],
+"summons":{
+"max":5,
+"list":[
+{
+"name":"Monk",
+"chance":20,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Manta Ray",
@@ -43244,7 +45021,17 @@
 "cooldown_ms":2000,
 "chance":15
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"blue djinn",
+"chance":10,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Marsh Stalker",
@@ -43517,6 +45304,34 @@
 },
 "loot_value":40,
 "spells":[
+{
+"cooldown_ms":2000,
+"chance":10,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":3,
+"name":"Fire pole"
+},
+{
+"cooldown_ms":2000,
+"chance":10,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":3,
+"name":"Fire pole"
+},
 {
 "cooldown_ms":2000,
 "chance":10,
@@ -44335,7 +46150,17 @@
 "radius":1,
 "name":"Physical ball"
 }
+],
+"summons":{
+"max":1,
+"list":[
+{
+"name":"Carnisylvan Sapling",
+"chance":70,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Melting Frozen Horror",
@@ -44503,7 +46328,12 @@
 "name":"Fire ball"
 }
 ],
-"target_distance":3
+"target_distance":3,
+"invisible":{
+"chance":50,
+"cooldown_ms":4000,
+"duration_ms":10000
+}
 },
 {
 "name":"Mercurial Menace",
@@ -44601,7 +46431,17 @@
 "cooldown_ms":2000,
 "chance":5
 }
+],
+"summons":{
+"max":3,
+"list":[
+{
+"name":"Mercury Blob",
+"chance":10,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Merikh the Slaughterer",
@@ -44633,7 +46473,17 @@
 "cooldown_ms":2000,
 "chance":15
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"green djinn",
+"chance":10,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Merlkin",
@@ -44682,6 +46532,20 @@
 "range":7,
 "radius":1,
 "name":"Energy ball"
+},
+{
+"cooldown_ms":2000,
+"chance":15,
+"element":"earth",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":1,
+"name":"Earth pole"
 }
 ],
 "target_distance":4,
@@ -44934,7 +46798,12 @@
 "cooldown_ms":2000,
 "chance":15
 }
-]
+],
+"invisible":{
+"chance":15,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Midnight Spawn",
@@ -45730,6 +47599,20 @@
 "range":7,
 "radius":1,
 "name":"Fire ball"
+},
+{
+"cooldown_ms":2000,
+"chance":10,
+"element":"energy",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":1,
+"name":"Energy pole"
 }
 ],
 "target_distance":4
@@ -45781,6 +47664,20 @@
 "range":7,
 "radius":1,
 "name":"Fire ball"
+},
+{
+"cooldown_ms":2000,
+"chance":10,
+"element":"energy",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":1,
+"name":"Energy pole"
 }
 ],
 "target_distance":4
@@ -46472,7 +48369,17 @@
 "cooldown_ms":2000,
 "chance":30
 }
+],
+"summons":{
+"max":3,
+"list":[
+{
+"name":"Acid Blob",
+"chance":40,
+"interval_ms":4000
+}
 ]
+}
 },
 {
 "name":"Mooh'Tah Master",
@@ -46785,7 +48692,17 @@
 "cooldown_ms":9000,
 "chance":15
 }
+],
+"summons":{
+"max":6,
+"list":[
+{
+"name":"Demon",
+"chance":33,
+"interval_ms":4000
+}
 ]
+}
 },
 {
 "name":"Morguthis",
@@ -46850,6 +48767,21 @@
 "element":"earth",
 "damage":65,
 "interval_ms":4000
+},
+"summons":{
+"max":3,
+"list":[
+{
+"name":"Hero",
+"chance":100,
+"interval_ms":2000
+}
+]
+},
+"invisible":{
+"chance":10,
+"cooldown_ms":2000,
+"duration_ms":10000
 }
 },
 {
@@ -46888,7 +48820,17 @@
 "name":"Physical ball"
 }
 ],
-"run_health":10
+"run_health":10,
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Gladiator",
+"chance":10,
+"interval_ms":2000
+}
+]
+}
 },
 {
 "name":"Mornenion",
@@ -47044,7 +48986,12 @@
 "cooldown_ms":1000,
 "chance":25
 }
-]
+],
+"invisible":{
+"chance":4,
+"cooldown_ms":1000,
+"duration_ms":10000
+}
 },
 {
 "name":"Mould Phantom",
@@ -47377,7 +49324,12 @@
 "name":"Physical ball"
 }
 ],
-"run_health":15
+"run_health":15,
+"invisible":{
+"chance":11,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Muglex Clan Footman",
@@ -47557,7 +49509,17 @@
 "death":100
 },
 "loot_value":0,
-"run_health":10
+"run_health":10,
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Rat",
+"chance":20,
+"interval_ms":2000
+}
+]
+}
 },
 {
 "name":"Murcion",
@@ -47657,7 +49619,17 @@
 "cooldown_ms":3000,
 "chance":10
 }
+],
+"summons":{
+"max":8,
+"list":[
+{
+"name":"Mushroom",
+"chance":30,
+"interval_ms":5000
+}
 ]
+}
 },
 {
 "name":"Mushroom",
@@ -48012,7 +49984,12 @@
 "cooldown_ms":2000,
 "chance":10
 }
-]
+],
+"invisible":{
+"chance":10,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Mutated Visco",
@@ -48463,6 +50440,26 @@
 "element":"earth",
 "damage":160,
 "interval_ms":4000
+},
+"summons":{
+"max":3,
+"list":[
+{
+"name":"Ghoul",
+"chance":15,
+"interval_ms":2000
+},
+{
+"name":"Ghost",
+"chance":5,
+"interval_ms":2000
+},
+{
+"name":"Mummy",
+"chance":5,
+"interval_ms":2000
+}
+]
 }
 },
 {
@@ -48613,6 +50610,26 @@
 "element":"earth",
 "damage":8,
 "interval_ms":4000
+},
+"summons":{
+"max":6,
+"list":[
+{
+"name":"Ghoul",
+"chance":20,
+"interval_ms":1000
+},
+{
+"name":"Ghost",
+"chance":17,
+"interval_ms":1000
+},
+{
+"name":"Mummy",
+"chance":15,
+"interval_ms":1000
+}
+]
 }
 },
 {
@@ -49180,6 +51197,11 @@
 "element":"earth",
 "damage":80,
 "interval_ms":4000
+},
+"invisible":{
+"chance":10,
+"cooldown_ms":2000,
+"duration_ms":10000
 }
 },
 {
@@ -49369,6 +51391,16 @@
 "element":"earth",
 "damage":1,
 "interval_ms":4000
+},
+"summons":{
+"max":1,
+"list":[
+{
+"name":"Chicken",
+"chance":10,
+"interval_ms":2000
+}
+]
 }
 },
 {
@@ -49979,7 +52011,17 @@
 "name":"Earth ball"
 }
 ],
-"target_distance":4
+"target_distance":4,
+"summons":{
+"max":1,
+"list":[
+{
+"name":"Young Goanna",
+"chance":10,
+"interval_ms":2000
+}
+]
+}
 },
 {
 "name":"Ogre Savage",
@@ -50096,6 +52138,21 @@
 "element":"fire",
 "damage":6,
 "interval_ms":9000
+},
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Dworc Fleshhunter",
+"chance":30,
+"interval_ms":1000
+},
+{
+"name":"Terror Bird",
+"chance":30,
+"interval_ms":1000
+}
+]
 }
 },
 {
@@ -50209,7 +52266,17 @@
 "name":"Death ball"
 }
 ],
-"target_distance":4
+"target_distance":4,
+"summons":{
+"max":6,
+"list":[
+{
+"name":"Skeleton",
+"chance":20,
+"interval_ms":2000
+}
+]
+}
 },
 {
 "name":"Old Bug",
@@ -50255,6 +52322,20 @@
 },
 "loot_value":0,
 "spells":[
+{
+"cooldown_ms":2000,
+"chance":10,
+"element":"earth",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":1,
+"name":"Earth pole"
+},
 {
 "cooldown_ms":2000,
 "chance":10,
@@ -50506,6 +52587,20 @@
 "range":4,
 "radius":1,
 "name":"Fire ball"
+},
+{
+"cooldown_ms":2000,
+"chance":12,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":3,
+"name":"Fire pole"
 }
 ],
 "heals":[
@@ -50570,6 +52665,21 @@
 "element":"earth",
 "damage":65,
 "interval_ms":4000
+},
+"summons":{
+"max":4,
+"list":[
+{
+"name":"Stalker",
+"chance":100,
+"interval_ms":2000
+}
+]
+},
+"invisible":{
+"chance":14,
+"cooldown_ms":2000,
+"duration_ms":10000
 }
 },
 {
@@ -50756,7 +52866,12 @@
 "radius":1,
 "name":"Physical ball"
 }
-]
+],
+"invisible":{
+"chance":5,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Orc Berserker",
@@ -50983,7 +53098,12 @@
 "radius":1,
 "name":"Physical ball"
 }
-]
+],
+"invisible":{
+"chance":5,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Orc Leader",
@@ -51165,7 +53285,17 @@
 "cooldown_ms":2000,
 "chance":60
 }
+],
+"summons":{
+"max":4,
+"list":[
+{
+"name":"Snake",
+"chance":20,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Orc Shield",
@@ -51202,7 +53332,12 @@
 "radius":1,
 "name":"Physical ball"
 }
-]
+],
+"invisible":{
+"chance":5,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Orc Spearman",
@@ -51278,7 +53413,12 @@
 "radius":1,
 "name":"Physical ball"
 }
-]
+],
+"invisible":{
+"chance":5,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Orc Warrior",
@@ -51588,6 +53728,20 @@
 },
 {
 "cooldown_ms":1000,
+"chance":10,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":4,
+"name":"Fire pole"
+},
+{
+"cooldown_ms":1000,
 "chance":15,
 "element":"energy",
 "damage":[
@@ -51618,7 +53772,17 @@
 "cooldown_ms":1000,
 "chance":17
 }
+],
+"summons":{
+"max":4,
+"list":[
+{
+"name":"demon",
+"chance":10,
+"interval_ms":1000
+}
 ]
+}
 },
 {
 "name":"Outburst",
@@ -51803,6 +53967,20 @@
 "range":1,
 "radius":1,
 "name":"Energy ball"
+},
+{
+"cooldown_ms":2000,
+"chance":14,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":1,
+"name":"Fire pole"
 },
 {
 "cooldown_ms":2000,
@@ -52405,7 +54583,22 @@
 "cooldown_ms":2000,
 "chance":30
 }
+],
+"summons":{
+"max":4,
+"list":[
+{
+"name":"Phantasm Summon",
+"chance":35,
+"interval_ms":2000
+}
 ]
+},
+"invisible":{
+"chance":25,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Phantasm Summon",
@@ -52452,7 +54645,12 @@
 "cooldown_ms":2000,
 "chance":30
 }
-]
+],
+"invisible":{
+"chance":25,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Pig",
@@ -53351,6 +55549,20 @@
 },
 {
 "cooldown_ms":1000,
+"chance":4,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":8,
+"radius":1,
+"name":"Fire pole"
+},
+{
+"cooldown_ms":1000,
 "chance":34,
 "element":"fire",
 "damage":[
@@ -53769,7 +55981,17 @@
 "name":"Earth ball"
 }
 ],
-"target_distance":4
+"target_distance":4,
+"summons":{
+"max":1,
+"list":[
+{
+"name":"Carnisylvan Sapling",
+"chance":70,
+"interval_ms":2000
+}
+]
+}
 },
 {
 "name":"Polar Bear",
@@ -54065,7 +56287,17 @@
 "cooldown_ms":2000,
 "chance":15
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"ghoul",
+"chance":10,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Priestess of the Wild Sun",
@@ -54235,7 +56467,32 @@
 "cooldown_ms":2000,
 "chance":20
 }
+],
+"summons":{
+"max":8,
+"list":[
+{
+"name":"walker",
+"chance":10,
+"interval_ms":2000
+},
+{
+"name":"glooth trasher",
+"chance":10,
+"interval_ms":2000
+},
+{
+"name":"glooth smasher",
+"chance":10,
+"interval_ms":2000
+},
+{
+"name":"glooth slasher",
+"chance":10,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Psychic Spirit Elemental",
@@ -54438,7 +56695,17 @@
 "radius":1,
 "name":"spowolnienie"
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Undead Gladiator",
+"chance":10,
+"interval_ms":1000
+}
 ]
+}
 },
 {
 "name":"Quara Constrictor",
@@ -54781,7 +57048,12 @@
 "death":100
 },
 "loot_value":7,
-"run_health":40
+"run_health":40,
+"invisible":{
+"chance":20,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Quara Mantassin Scout",
@@ -55107,6 +57379,20 @@
 "spells":[
 {
 "cooldown_ms":2000,
+"chance":11,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":3,
+"radius":1,
+"name":"Fire pole"
+},
+{
+"cooldown_ms":2000,
 "chance":9,
 "element":"fire",
 "damage":[
@@ -55268,6 +57554,34 @@
 "type":"beam",
 "length":7,
 "name":"Fire beam"
+},
+{
+"cooldown_ms":2000,
+"chance":11,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":3,
+"name":"Fire pole"
+},
+{
+"cooldown_ms":2000,
+"chance":11,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":3,
+"radius":1,
+"name":"Fire pole"
 }
 ]
 },
@@ -55292,7 +57606,33 @@
 "death":85
 },
 "loot_value":0,
-"run_health":300
+"spells":[
+{
+"cooldown_ms":2000,
+"chance":15,
+"element":"energy",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":2,
+"name":"Energy pole"
+}
+],
+"run_health":300,
+"summons":{
+"max":1,
+"list":[
+{
+"name":"Golden Servant",
+"chance":50,
+"interval_ms":2000
+}
+]
+}
 },
 {
 "name":"Rahemos",
@@ -55373,6 +57713,16 @@
 "element":"earth",
 "damage":65,
 "interval_ms":4000
+},
+"summons":{
+"max":1,
+"list":[
+{
+"name":"Demon",
+"chance":12,
+"interval_ms":1000
+}
+]
 }
 },
 {
@@ -55458,7 +57808,17 @@
 "length":4,
 "name":"Death beam"
 }
+],
+"summons":{
+"max":4,
+"list":[
+{
+"name":"elite pirat",
+"chance":30,
+"interval_ms":1000
+}
 ]
+}
 },
 {
 "name":"Ravenous Beyondling",
@@ -55529,7 +57889,32 @@
 "holy":100,
 "death":0
 },
-"loot_value":1159
+"loot_value":1159,
+"summons":{
+"max":4,
+"list":[
+{
+"name":"Mutated Bat",
+"chance":100,
+"interval_ms":2000
+},
+{
+"name":"Mutated Bat",
+"chance":100,
+"interval_ms":2000
+},
+{
+"name":"Mutated Bat",
+"chance":100,
+"interval_ms":2000
+},
+{
+"name":"Mutated Bat",
+"chance":100,
+"interval_ms":2000
+}
+]
+}
 },
 {
 "name":"Ravenous Lava Lurker",
@@ -55730,7 +58115,17 @@
 "cooldown_ms":2000,
 "chance":15
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Eruption of Destruction",
+"chance":15,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Reality Reaver",
@@ -55781,7 +58176,12 @@
 "radius":1,
 "name":"Energy DoT"
 }
-]
+],
+"invisible":{
+"chance":15,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Realityquake",
@@ -55938,7 +58338,12 @@
 "cooldown_ms":2000,
 "chance":100
 }
-]
+],
+"invisible":{
+"chance":15,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Reflection of Mawhawk",
@@ -56285,7 +58690,12 @@
 "holy":100,
 "death":100
 },
-"loot_value":0
+"loot_value":0,
+"invisible":{
+"chance":20,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Renegade Quara Pincher",
@@ -57213,7 +59623,12 @@
 "holy":105,
 "death":100
 },
-"loot_value":0
+"loot_value":0,
+"invisible":{
+"chance":10,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Ripper Spectre",
@@ -57323,7 +59738,12 @@
 "radius":1,
 "name":"Physical ball"
 }
-]
+],
+"invisible":{
+"chance":15,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Roaring Lion",
@@ -58095,7 +60515,12 @@
 "radius":1,
 "name":"Earth DoT"
 }
-]
+],
+"invisible":{
+"chance":10,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Running Elite Orc Guard",
@@ -58601,7 +61026,17 @@
 "cooldown_ms":2000,
 "chance":25
 }
+],
+"summons":{
+"max":4,
+"list":[
+{
+"name":"Snake",
+"chance":25,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Scar Tribe Warrior",
@@ -58659,6 +61094,20 @@
 "range":1,
 "radius":1,
 "name":"Earth ball"
+},
+{
+"cooldown_ms":2000,
+"chance":10,
+"element":"earth",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":1,
+"radius":1,
+"name":"Earth pole"
 }
 ],
 "run_health":80
@@ -58862,7 +61311,17 @@
 "name":"Death ball"
 }
 ],
-"run_health":366
+"run_health":366,
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Draken Warmaster",
+"chance":10,
+"interval_ms":2000
+}
+]
+}
 },
 {
 "name":"Scorpion",
@@ -59551,6 +62010,21 @@
 "element":"earth",
 "damage":90,
 "interval_ms":4000
+},
+"summons":{
+"max":4,
+"list":[
+{
+"name":"Skeleton",
+"chance":10,
+"interval_ms":2000
+},
+{
+"name":"Ghost",
+"chance":5,
+"interval_ms":2000
+}
+]
 }
 },
 {
@@ -59660,7 +62134,17 @@
 "cooldown_ms":2000,
 "chance":7
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Werebear",
+"chance":20,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Shaper Matriarch",
@@ -59965,7 +62449,22 @@
 "cooldown_ms":4000,
 "chance":15
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Werebadger",
+"chance":20,
+"interval_ms":2000
+}
 ]
+},
+"invisible":{
+"chance":15,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Sharptooth",
@@ -60560,6 +63059,11 @@
 "element":"earth",
 "damage":80,
 "interval_ms":4000
+},
+"invisible":{
+"chance":10,
+"cooldown_ms":2000,
+"duration_ms":10000
 }
 },
 {
@@ -60609,6 +63113,20 @@
 "range":1,
 "radius":1,
 "name":"Death ball"
+},
+{
+"cooldown_ms":2000,
+"chance":10,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":4,
+"radius":1,
+"name":"Fire pole"
 }
 ],
 "heals":[
@@ -60692,7 +63210,17 @@
 "cooldown_ms":2000,
 "chance":35
 }
+],
+"summons":{
+"max":3,
+"list":[
+{
+"name":"Retainer of Baeloc",
+"chance":20,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Sir Nictros",
@@ -60764,7 +63292,17 @@
 "cooldown_ms":2000,
 "chance":35
 }
+],
+"summons":{
+"max":3,
+"list":[
+{
+"name":"Squire of Nictros",
+"chance":20,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Sir Valorcrest",
@@ -60811,7 +63349,22 @@
 "cooldown_ms":1000,
 "chance":12
 }
+],
+"summons":{
+"max":4,
+"list":[
+{
+"name":"Vampire",
+"chance":30,
+"interval_ms":2000
+}
 ]
+},
+"invisible":{
+"chance":25,
+"cooldown_ms":3000,
+"duration_ms":10000
+}
 },
 {
 "name":"Sister Hetai",
@@ -61098,7 +63651,17 @@
 "holy":100,
 "death":100
 },
-"loot_value":0
+"loot_value":0,
+"summons":{
+"max":3,
+"list":[
+{
+"name":"Slime",
+"chance":10,
+"interval_ms":2000
+}
+]
+}
 },
 {
 "name":"Slug",
@@ -61206,7 +63769,17 @@
 "cooldown_ms":2000,
 "chance":15
 }
+],
+"summons":{
+"max":3,
+"list":[
+{
+"name":"Wild Warrior",
+"chance":20,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Snail Slime",
@@ -62202,7 +64775,12 @@
 "cooldown_ms":2000,
 "chance":15
 }
-]
+],
+"invisible":{
+"chance":5,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Soulless Minion",
@@ -62505,6 +65083,22 @@
 "death":100
 },
 "loot_value":0,
+"spells":[
+{
+"cooldown_ms":2000,
+"chance":25,
+"element":"earth",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":3,
+"name":"Earth pole"
+}
+],
 "heals":[
 {
 "heal":[
@@ -63011,6 +65605,20 @@
 "spells":[
 {
 "cooldown_ms":1000,
+"chance":15,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":4,
+"name":"Fire pole"
+},
+{
+"cooldown_ms":1000,
 "chance":20,
 "element":"fire",
 "damage":[
@@ -63169,7 +65777,17 @@
 "name":"Death ball"
 }
 ],
-"run_health":366
+"run_health":366,
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Draken Warmaster",
+"chance":10,
+"interval_ms":2000
+}
+]
+}
 },
 {
 "name":"Spiteful Spitter",
@@ -63691,7 +66309,17 @@
 "holy":100,
 "death":100
 },
-"loot_value":0
+"loot_value":0,
+"summons":{
+"max":3,
+"list":[
+{
+"name":"Squidgy Slime",
+"chance":10,
+"interval_ms":2000
+}
+]
+}
 },
 {
 "name":"Squire of Nictros",
@@ -63728,7 +66356,12 @@
 "radius":1,
 "name":"Physical ball"
 }
-]
+],
+"invisible":{
+"chance":15,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Squirrel",
@@ -63931,7 +66564,12 @@
 "cooldown_ms":2000,
 "chance":15
 }
-]
+],
+"invisible":{
+"chance":15,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Stalker",
@@ -63953,7 +66591,12 @@
 "holy":110,
 "death":90
 },
-"loot_value":1
+"loot_value":1,
+"invisible":{
+"chance":40,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Stalking Stalk",
@@ -65550,7 +68193,12 @@
 "cooldown_ms":2000,
 "chance":5
 }
-]
+],
+"invisible":{
+"chance":10,
+"cooldown_ms":2000,
+"duration_ms":3000
+}
 },
 {
 "name":"Tainted Soul Splinter",
@@ -66280,7 +68928,12 @@
 "cooldown_ms":2000,
 "chance":15
 }
-]
+],
+"invisible":{
+"chance":15,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Thalas",
@@ -66354,7 +69007,17 @@
 "cooldown_ms":1000,
 "chance":20
 }
+],
+"summons":{
+"max":8,
+"list":[
+{
+"name":"Slime",
+"chance":100,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Thanatursus",
@@ -66465,6 +69128,20 @@
 "range":6,
 "radius":1,
 "name":"spowolnienie"
+},
+{
+"cooldown_ms":1000,
+"chance":10,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":4,
+"name":"Fire pole"
 }
 ]
 },
@@ -66942,7 +69619,17 @@
 "length":9,
 "name":"Physical DoT"
 }
+],
+"summons":{
+"max":8,
+"list":[
+{
+"name":"time waster",
+"chance":3,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"The Blightfather",
@@ -66965,7 +69652,12 @@
 "death":100
 },
 "loot_value":0,
-"run_health":80
+"run_health":80,
+"invisible":{
+"chance":10,
+"cooldown_ms":1000,
+"duration_ms":10000
+}
 },
 {
 "name":"The Bloodtusk",
@@ -67215,7 +69907,17 @@
 "cooldown_ms":2000,
 "chance":15
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"brain parasite",
+"chance":20,
+"interval_ms":4000
+}
 ]
+}
 },
 {
 "name":"The Cold of Winter",
@@ -67412,7 +70114,22 @@
 "cooldown_ms":1000,
 "chance":25
 }
+],
+"summons":{
+"max":1,
+"list":[
+{
+"name":"Banshee",
+"chance":50,
+"interval_ms":4000
+}
 ]
+},
+"invisible":{
+"chance":30,
+"cooldown_ms":3000,
+"duration_ms":10000
+}
 },
 {
 "name":"The Count of the Core",
@@ -67568,6 +70285,21 @@
 "element":"earth",
 "damage":220,
 "interval_ms":4000
+},
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Ghoul",
+"chance":20,
+"interval_ms":2000
+}
+]
+},
+"invisible":{
+"chance":50,
+"cooldown_ms":3000,
+"duration_ms":10000
 }
 },
 {
@@ -68250,7 +70982,22 @@
 "cooldown_ms":1000,
 "chance":9
 }
+],
+"summons":{
+"max":5,
+"list":[
+{
+"name":"demon skeleton",
+"chance":13,
+"interval_ms":1000
+},
+{
+"name":"ghost",
+"chance":12,
+"interval_ms":1000
+}
 ]
+}
 },
 {
 "name":"The False God",
@@ -68649,7 +71396,12 @@
 "cooldown_ms":2000,
 "chance":15
 }
-]
+],
+"invisible":{
+"chance":100,
+"cooldown_ms":1000,
+"duration_ms":10000
+}
 },
 {
 "name":"The Freezing Time Guardian",
@@ -68810,7 +71562,27 @@
 "cooldown_ms":2000,
 "chance":35
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Ghost",
+"chance":26,
+"interval_ms":2000
+},
+{
+"name":"Crypt Shambler",
+"chance":26,
+"interval_ms":2000
+}
 ]
+},
+"invisible":{
+"chance":50,
+"cooldown_ms":3000,
+"duration_ms":10000
+}
 },
 {
 "name":"The Hairy One",
@@ -68865,7 +71637,12 @@
 "cooldown_ms":2000,
 "chance":50
 }
-]
+],
+"invisible":{
+"chance":50,
+"cooldown_ms":4000,
+"duration_ms":10000
+}
 },
 {
 "name":"The Heat of Summer",
@@ -68901,6 +71678,20 @@
 "range":7,
 "radius":2,
 "name":"Fire ball"
+},
+{
+"cooldown_ms":2000,
+"chance":25,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":1,
+"name":"Fire pole"
 }
 ]
 },
@@ -68949,7 +71740,32 @@
 "cooldown_ms":1000,
 "chance":15
 }
+],
+"summons":{
+"max":6,
+"list":[
+{
+"name":"Minotaur Archer",
+"chance":13,
+"interval_ms":1000
+},
+{
+"name":"Minotaur Guard",
+"chance":13,
+"interval_ms":1000
+},
+{
+"name":"Minotaur Mage",
+"chance":13,
+"interval_ms":1000
+}
 ]
+},
+"invisible":{
+"chance":10,
+"cooldown_ms":1000,
+"duration_ms":10000
+}
 },
 {
 "name":"The Hunger",
@@ -69163,6 +71979,11 @@
 "element":"earth",
 "damage":280,
 "interval_ms":4000
+},
+"invisible":{
+"chance":11,
+"cooldown_ms":2000,
+"duration_ms":10000
 }
 },
 {
@@ -69350,7 +72171,17 @@
 "cooldown_ms":2000,
 "chance":25
 }
+],
+"summons":{
+"max":6,
+"list":[
+{
+"name":"sword of vengeance",
+"chance":50,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"The Lily of Night",
@@ -69860,7 +72691,17 @@
 "cooldown_ms":4000,
 "chance":5
 }
+],
+"summons":{
+"max":3,
+"list":[
+{
+"name":"fire elemental",
+"chance":50,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"The Old Widow",
@@ -69912,6 +72753,20 @@
 "range":7,
 "radius":1,
 "name":"spowolnienie"
+},
+{
+"cooldown_ms":1000,
+"chance":10,
+"element":"earth",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":4,
+"name":"Earth pole"
 }
 ],
 "heals":[
@@ -69923,7 +72778,17 @@
 "cooldown_ms":1000,
 "chance":17
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"giant spider",
+"chance":13,
+"interval_ms":1000
+}
 ]
+}
 },
 {
 "name":"The Pale Count",
@@ -69976,7 +72841,17 @@
 "radius":2,
 "name":"Ice ball"
 }
+],
+"summons":{
+"max":4,
+"list":[
+{
+"name":"Nightfiend",
+"chance":10,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"The Pale Worm",
@@ -70230,7 +73105,17 @@
 "cooldown_ms":1000,
 "chance":75
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Defiler",
+"chance":20,
+"interval_ms":4000
+}
 ]
+}
 },
 {
 "name":"The Primal Menace",
@@ -70432,6 +73317,26 @@
 "element":"earth",
 "damage":320,
 "interval_ms":4000
+},
+"summons":{
+"max":16,
+"list":[
+{
+"name":"Elder Mummy",
+"chance":9,
+"interval_ms":2000
+},
+{
+"name":"Canopic Jar",
+"chance":9,
+"interval_ms":2000
+},
+{
+"name":"Greater Canopic Jar",
+"chance":9,
+"interval_ms":2000
+}
+]
 }
 },
 {
@@ -70883,7 +73788,27 @@
 "cooldown_ms":6000,
 "chance":25
 }
+],
+"summons":{
+"max":8,
+"list":[
+{
+"name":"Charger",
+"chance":15,
+"interval_ms":1000
+},
+{
+"name":"Spark of Destruction",
+"chance":15,
+"interval_ms":1000
+}
 ]
+},
+"invisible":{
+"chance":4,
+"cooldown_ms":1000,
+"duration_ms":10000
+}
 },
 {
 "name":"The Shatterer",
@@ -71079,7 +74004,17 @@
 "cooldown_ms":2000,
 "chance":20
 }
+],
+"summons":{
+"max":4,
+"list":[
+{
+"name":"Vermin Swarm",
+"chance":100,
+"interval_ms":20000
+}
 ]
+}
 },
 {
 "name":"The Sinister Hermit Dirty",
@@ -71126,7 +74061,17 @@
 "cooldown_ms":2000,
 "chance":20
 }
+],
+"summons":{
+"max":4,
+"list":[
+{
+"name":"Vermin Swarm",
+"chance":100,
+"interval_ms":20000
+}
 ]
+}
 },
 {
 "name":"The Snapper",
@@ -71221,7 +74166,17 @@
 "cooldown_ms":2000,
 "chance":100
 }
+],
+"summons":{
+"max":5,
+"list":[
+{
+"name":"Freed Soul",
+"chance":5,
+"interval_ms":5000
+}
 ]
+}
 },
 {
 "name":"The Source of Corruption",
@@ -71538,6 +74493,16 @@
 "element":"earth",
 "damage":4,
 "interval_ms":4000
+},
+"summons":{
+"max":3,
+"list":[
+{
+"name":"wormling",
+"chance":40,
+"interval_ms":2000
+}
+]
 }
 },
 {
@@ -71660,7 +74625,12 @@
 "cooldown_ms":1000,
 "chance":25
 }
-]
+],
+"invisible":{
+"chance":30,
+"cooldown_ms":3000,
+"duration_ms":10000
+}
 },
 {
 "name":"The Welter",
@@ -71756,7 +74726,17 @@
 "cooldown_ms":2000,
 "chance":12
 }
+],
+"summons":{
+"max":1,
+"list":[
+{
+"name":"spawn of the welter",
+"chance":16,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Thieving Squirrel",
@@ -71779,7 +74759,12 @@
 "death":100
 },
 "loot_value":0,
-"run_health":55
+"run_health":55,
+"invisible":{
+"chance":10,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Thorn Minion",
@@ -71957,6 +74942,20 @@
 "range":7,
 "radius":2,
 "name":"Fire ball"
+},
+{
+"cooldown_ms":2000,
+"chance":10,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":2,
+"name":"Fire pole"
 }
 ],
 "heals":[
@@ -72020,6 +75019,20 @@
 },
 {
 "cooldown_ms":2000,
+"chance":19,
+"element":"earth",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":3,
+"radius":1,
+"name":"Earth pole"
+},
+{
+"cooldown_ms":2000,
 "chance":18,
 "element":"physical",
 "damage":[
@@ -72045,7 +75058,17 @@
 "cooldown_ms":2000,
 "chance":10
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Massive Water Elemental",
+"chance":10,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Tiger",
@@ -72813,7 +75836,12 @@
 "cooldown_ms":2000,
 "chance":28
 }
-]
+],
+"invisible":{
+"chance":18,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Troll Marauder",
@@ -73185,7 +76213,12 @@
 "cooldown_ms":2000,
 "chance":15
 }
-]
+],
+"invisible":{
+"chance":20,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Truffle",
@@ -73630,7 +76663,12 @@
 "cooldown_ms":2000,
 "chance":33
 }
-]
+],
+"invisible":{
+"chance":11,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Ugly Monster",
@@ -73653,7 +76691,12 @@
 "death":0
 },
 "loot_value":0,
-"target_distance":4
+"target_distance":4,
+"invisible":{
+"chance":8,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Unaz the Mean",
@@ -74005,6 +77048,20 @@
 {
 "cooldown_ms":2000,
 "chance":10,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":1,
+"name":"Fire pole"
+},
+{
+"cooldown_ms":2000,
+"chance":10,
 "element":"death",
 "damage":[
 300,
@@ -74124,7 +77181,17 @@
 "cooldown_ms":2000,
 "chance":15
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"energy elemental",
+"chance":10,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Unchained Fire",
@@ -74343,7 +77410,12 @@
 "radius":1,
 "name":"Death ball"
 }
-]
+],
+"invisible":{
+"chance":15,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Undead Gladiator",
@@ -74380,7 +77452,12 @@
 "radius":1,
 "name":"Physical ball"
 }
-]
+],
+"invisible":{
+"chance":15,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Undead Mine Worker",
@@ -75049,7 +78126,27 @@
 "length":4,
 "name":"Ice beam"
 }
+],
+"summons":{
+"max":5,
+"list":[
+{
+"name":"hardened usurper archer",
+"chance":0,
+"interval_ms":600000
+},
+{
+"name":"hardened usurper warlock",
+"chance":0,
+"interval_ms":600000
+},
+{
+"name":"hardened usurper knight",
+"chance":0,
+"interval_ms":600000
+}
 ]
+}
 },
 {
 "name":"Usurper Knight",
@@ -75676,6 +78773,16 @@
 "element":"earth",
 "damage":65,
 "interval_ms":4000
+},
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Banshee",
+"chance":20,
+"interval_ms":2000
+}
+]
 }
 },
 {
@@ -76083,6 +79190,20 @@
 "type":"beam",
 "length":8,
 "name":"Death beam"
+},
+{
+"cooldown_ms":2000,
+"chance":10,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":1,
+"name":"Fire pole"
 },
 {
 "cooldown_ms":2000,
@@ -76970,6 +80091,20 @@
 {
 "cooldown_ms":2000,
 "chance":10,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":2,
+"name":"Fire pole"
+},
+{
+"cooldown_ms":2000,
+"chance":10,
 "element":"energy",
 "damage":[
 150,
@@ -76991,7 +80126,22 @@
 "cooldown_ms":2000,
 "chance":20
 }
+],
+"summons":{
+"max":1,
+"list":[
+{
+"name":"stone golem",
+"chance":10,
+"interval_ms":2000
+}
 ]
+},
+"invisible":{
+"chance":20,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Warlord Ruzad",
@@ -77013,7 +80163,17 @@
 "holy":90,
 "death":110
 },
-"loot_value":0
+"loot_value":0,
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Orc Berserker",
+"chance":30,
+"interval_ms":2000
+}
+]
+}
 },
 {
 "name":"Warm Fire",
@@ -77262,7 +80422,12 @@
 "holy":100,
 "death":100
 },
-"loot_value":0
+"loot_value":0,
+"invisible":{
+"chance":20,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Weakened Frazzlemaw",
@@ -77606,7 +80771,12 @@
 "length":5,
 "name":"spowolnienie"
 }
-]
+],
+"invisible":{
+"chance":5,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Weeping Soul",
@@ -77693,6 +80863,11 @@
 "element":"earth",
 "damage":140,
 "interval_ms":4000
+},
+"invisible":{
+"chance":20,
+"cooldown_ms":2000,
+"duration_ms":10000
 }
 },
 {
@@ -77779,6 +80954,11 @@
 "element":"earth",
 "damage":140,
 "interval_ms":4000
+},
+"invisible":{
+"chance":20,
+"cooldown_ms":2000,
+"duration_ms":10000
 }
 },
 {
@@ -77911,7 +81091,22 @@
 "cooldown_ms":4000,
 "chance":15
 }
+],
+"summons":{
+"max":1,
+"list":[
+{
+"name":"fox",
+"chance":10,
+"interval_ms":2000
+}
 ]
+},
+"invisible":{
+"chance":20,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Werehyaena",
@@ -78378,7 +81573,17 @@
 "cooldown_ms":2000,
 "chance":15
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"war wolf",
+"chance":40,
+"interval_ms":2000
+}
 ]
+}
 },
 {
 "name":"Whirling Blades",
@@ -78606,7 +81811,12 @@
 }
 ],
 "target_distance":4,
-"run_health":30
+"run_health":30,
+"invisible":{
+"chance":5,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"White Tiger",
@@ -79252,7 +82462,12 @@
 "cooldown_ms":2000,
 "chance":5
 }
-]
+],
+"invisible":{
+"chance":10,
+"cooldown_ms":2000,
+"duration_ms":3000
+}
 },
 {
 "name":"Witch",
@@ -79288,6 +82503,20 @@
 "range":7,
 "radius":1,
 "name":"Fire ball"
+},
+{
+"cooldown_ms":2000,
+"chance":10,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":1,
+"name":"Fire pole"
 }
 ],
 "target_distance":4,
@@ -79661,7 +82890,17 @@
 "name":"Death ball"
 }
 ],
-"run_health":366
+"run_health":366,
+"summons":{
+"max":2,
+"list":[
+{
+"name":"Draken Warmaster",
+"chance":10,
+"interval_ms":2000
+}
+]
+}
 },
 {
 "name":"Wyrm",
@@ -79925,9 +83164,28 @@
 "range":5,
 "radius":1,
 "name":"Earth DoT"
+},
+{
+"cooldown_ms":2000,
+"chance":13,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":5,
+"radius":1,
+"name":"Fire pole"
 }
 ],
-"target_distance":4
+"target_distance":4,
+"invisible":{
+"chance":18,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Yakchal",
@@ -79989,7 +83247,17 @@
 "cooldown_ms":1000,
 "chance":25
 }
+],
+"summons":{
+"max":4,
+"list":[
+{
+"name":"Ice Golem",
+"chance":13,
+"interval_ms":1000
+}
 ]
+}
 },
 {
 "name":"Yalahari",
@@ -80501,7 +83769,17 @@
 "cooldown_ms":2000,
 "chance":25
 }
+],
+"summons":{
+"max":1,
+"list":[
+{
+"name":"Zamulosh2",
+"chance":100,
+"interval_ms":1000
+}
 ]
+}
 },
 {
 "name":"Zamulosh2",
@@ -80782,6 +84060,20 @@
 },
 {
 "cooldown_ms":2000,
+"chance":10,
+"element":"fire",
+"damage":[
+0,
+0
+],
+"effect":"field",
+"type":"ball",
+"range":7,
+"radius":2,
+"name":"Fire pole"
+},
+{
+"cooldown_ms":2000,
 "chance":25,
 "element":"physical",
 "damage":[
@@ -80817,7 +84109,27 @@
 "cooldown_ms":2000,
 "chance":20
 }
+],
+"summons":{
+"max":5,
+"list":[
+{
+"name":"Warlock",
+"chance":10,
+"interval_ms":2000
+},
+{
+"name":"Green Djinn",
+"chance":10,
+"interval_ms":2000
+}
 ]
+},
+"invisible":{
+"chance":20,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Zarcorix Of Yalahar",
@@ -80887,7 +84199,22 @@
 "cooldown_ms":2000,
 "chance":30
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"dark torturer",
+"chance":100,
+"interval_ms":1000
+}
 ]
+},
+"invisible":{
+"chance":20,
+"cooldown_ms":2000,
+"duration_ms":10000
+}
 },
 {
 "name":"Zevelon Duskbringer",
@@ -80934,7 +84261,22 @@
 "cooldown_ms":1000,
 "chance":12
 }
+],
+"summons":{
+"max":3,
+"list":[
+{
+"name":"Vampire",
+"chance":40,
+"interval_ms":3000
+}
 ]
+},
+"invisible":{
+"chance":25,
+"cooldown_ms":3000,
+"duration_ms":10000
+}
 },
 {
 "name":"Zomba",
@@ -81080,7 +84422,17 @@
 "cooldown_ms":2000,
 "chance":35
 }
+],
+"summons":{
+"max":2,
+"list":[
+{
+"name":"demon",
+"chance":50,
+"interval_ms":4000
+}
 ]
+}
 },
 {
 "name":"Zorvorax",
@@ -81250,7 +84602,12 @@
 "cooldown_ms":2000,
 "chance":50
 }
-]
+],
+"invisible":{
+"chance":5,
+"cooldown_ms":1000,
+"duration_ms":10000
+}
 },
 {
 "name":"Zulazza the Corruptor",
@@ -81412,7 +84769,17 @@
 "holy":100,
 "death":100
 },
-"loot_value":0
+"loot_value":0,
+"summons":{
+"max":5,
+"list":[
+{
+"name":"Dreadbeast",
+"chance":25,
+"interval_ms":2000
+}
+]
+}
 }
 ]
 }

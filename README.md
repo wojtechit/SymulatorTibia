@@ -161,11 +161,25 @@ Reguły nie gonią uciekających potworów: dobijają je SD, jeśli są w zasię
 polują dalej. Ręczna baza (9 gatunków) dostała te same pola z Canary; Hydra i Demon dostały też
 brakujące czary obszarowe.
 
-**Jeszcze nie modelowane:**
-- pola na ziemi (fire field, poison field);
-- przyzwania, niewidzialność, zmiana wyglądu, drunk;
-- leczenie efektów przez druida (Exana Pox / Exana Flam);
-- haste druida (Utani Hur / Gran Hur), który w grze zdejmuje paraliż.
+### Pola, przyzwania, niewidzialność, cure i haste
+
+| Mechanika | Źródło | W symulatorze |
+|---|---|---|
+| **Pola na ziemi** | ataki `firefield` / `poisonfield` / `energyfield` (59 czarów, np. fire bomb Dragon Lorda na 37 pól) | pola na obszarze wokół druida przez 30 s. Wejście albo stanie na polu: ogień 20 + podpalenie 70, trucizna 80 w czasie, energia 30 + 75 w czasie. Pola są w kanale zagrożenia obserwacji (`field_here`), a automatyczne chodzenie (trasa, makro-akcje) je omija, jak autowalk klienta |
+| **Przyzwania** | `monster.summon` (176 potworów, np. Demon → Fire Elemental, Necromancer → Ghoul/Ghost/Mummy) | co `interval` rzut na szansę, do `maxSummons`. Przyzwane potwory nie dają expa ani lootu, nie odradzają się i znikają po śmierci przywołującego |
+| **Niewidzialność** | obrona `invisible` (102 potwory, np. Warlock) | przez 10 s nie da się go namierzyć (Exori, SD, rod) i nie ma go w obserwacji; dalej atakuje, Avalanche trafia go w obszarze. W GUI jest półprzezroczysty |
+| **Exana Pox / Flam / Vis** | czary druida | akcja `cure` (klawisz 7): usuwa najgroźniejszy efekt trucizny, ognia albo energii; 30 many, 6 s cooldownu, grupa leczenia |
+| **Utani Gran Hur / Utani Hur** | czary druida | akcja `haste` (klawisz 8): Strong Haste od poziomu 20 (prędkość ×1,7 − 56 przez 22 s), inaczej Haste (×1,3 − 24 przez 33 s). **Zdejmuje paraliż**; paraliż z kolei kasuje haste |
+
+Warstwa przetrwania (automat i reguły) leczy efekt, gdy zostało ≥ 10% max HP obrażeń, i zdejmuje
+paraliż haste'em. Reguły utrzymują haste przy manie > 50%, co kosztuje manę, czyli potiony.
+
+W obserwacji doszły `cooldown_cure`, `cooldown_haste`, `hasted` i `field_here`, a akcji jest 23.
+
+Wciąż uproszczone:
+- potwory nie zmieniają wyglądu, nie upijają (drunk) i nie omijają pól;
+- czas pola jest jeden dla wszystkich;
+- efekt z czaru-pola nakłada się jak trucizna z ataku wręcz.
 
 ## Faza 9: model uczy się trasy, lure'owania i ucieczek
 
@@ -183,7 +197,7 @@ to, co wiedziałby gracz:
 - które potwory zabił i kiedy wrócą;
 - ile potworów powinno teraz być w każdej grupie.
 
-Do obserwacji (dziś 362 cechy) doszło:
+Do obserwacji doszło (dziś łącznie 366 cech):
 
 | Cechy | Znaczenie |
 |---|---|
@@ -327,9 +341,9 @@ Wartości w `monsters.json` pochodzą z ogólnej wiedzy o Tibii i są **przybli�
 
 ## Format eksportu modelu
 
-`druid_policy.npz`: `W0,b0` (362→128), `W1,b1` (128→128), `W2,b2` (128→21) + `metadata` (JSON: `feature_names`, `action_names`, stałe obserwacji, `env_config`). Inferencja: `argmax(relu(relu(x@W0+b0)@W1+b1)@W2+b2)`. Przy zainstalowanym PyTorch dodatkowo `druid_policy.pt` zgodny z `nn.Sequential(Linear, ReLU, Linear, ReLU, Linear)`.
+`druid_policy.npz`: `W0,b0` (366→128), `W1,b1` (128→128), `W2,b2` (128→23) + `metadata` (JSON: `feature_names`, `action_names`, stałe obserwacji, `env_config`). Inferencja: `argmax(relu(relu(x@W0+b0)@W1+b1)@W2+b2)`. Przy zainstalowanym PyTorch dodatkowo `druid_policy.pt` zgodny z `nn.Sequential(Linear, ReLU, Linear, ReLU, Linear)`.
 
-W `brainstem.py`: wypełnij `GameSnapshot`, przepuść przez `encode_observation()` z `rl_twin/observation.py` (nie przepisuj — kolejność cech musi się zgadzać) i podaj do `BrainstemPolicy.act_name()`. Modele z wcześniejszych faz (119/7, 190/13, 198/14) nie mają obecnego układu (362 cechy, 21 akcji): `load_policy()` / `--resume` przenosi wagi po nazwach cech i akcji (stare zachowanie bez zmian, nowe cechy = 0, nowa akcja = neutralna, epsilon wraca do połowy). Nagroda zmieniła się na ekonomiczną, więc i tak dotrenuj. Mapę zagrożenia w `brainstem.py` licz tą samą funkcją `rl_twin.aoe.danger_window` (pozycje i kierunki potworów + czary z `monsters.json`).
+W `brainstem.py`: wypełnij `GameSnapshot`, przepuść przez `encode_observation()` z `rl_twin/observation.py` (nie przepisuj — kolejność cech musi się zgadzać) i podaj do `BrainstemPolicy.act_name()`. Modele z wcześniejszych faz (119/7, 190/13, 198/14) nie mają obecnego układu (366 cech, 23 akcje): `load_policy()` / `--resume` przenosi wagi po nazwach cech i akcji (stare zachowanie bez zmian, nowe cechy = 0, nowa akcja = neutralna, epsilon wraca do połowy). Nagroda zmieniła się na ekonomiczną, więc i tak dotrenuj. Mapę zagrożenia w `brainstem.py` licz tą samą funkcją `rl_twin.aoe.danger_window` (pozycje i kierunki potworów + czary z `monsters.json`).
 
 ## Sprite'y (AssetManager)
 

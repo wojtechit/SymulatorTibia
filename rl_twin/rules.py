@@ -10,6 +10,8 @@ Priorities each decision (like a careful druid on a cavebot):
   6. step off melee range while spells are on cooldown (kiting), else close in to spell range
   7. follow the waypoint route when nothing is aggressive; without a route walk to the spawn group
      with the most expected monsters (memory of what was killed and when it respawns)
+  0. survival also cures heavy poison / burning / electrification (Exana Pox/Flam/Vis) and breaks a paralyze
+     with haste; haste (Utani Gran Hur) is kept up while mana allows
   0. without the tactics automat: run for the stairs below escape_hp or above safe_max monsters
 """
 
@@ -18,7 +20,7 @@ from dataclasses import dataclass
 from .aoe import danger_window
 from .combat import SPELLBOOK
 from .env import (ACTION_EXORI_FRIGO, ACTION_EXORI_TERA, ACTION_USE_AVALANCHE,
-                  ACTION_ESCAPE, ACTION_USE_SD, ACTION_WAIT, AVALANCHE, MOVE_DELTAS, STRIKE_RANGE, RUNE_RANGE)
+                  ACTION_ESCAPE, ACTION_HASTE, ACTION_USE_SD, ACTION_WAIT, AVALANCHE, MOVE_DELTAS, STRIKE_RANGE, RUNE_RANGE)
 from .physics import chebyshev, in_view
 
 DANGER_RADIUS = 2
@@ -32,6 +34,8 @@ class RuleConfig:
     min_avalanche_hits: int = 3
     sd_min_target_hp: float = 0.25     # SD only on targets above this HP ratio
     kite: bool = True
+    keep_haste: bool = True
+    haste_above: float = 0.50          # mana ratio needed to refresh haste
 
 
 def _danger(env, druid):
@@ -64,9 +68,13 @@ def rule_action(env, config=None):
     """Action index for the current state of a DruidHuntEnv."""
     cfg = config or RuleConfig()
     druid, now = env.druid, env.time_ms
-    survival = env.survival_action(cfg.heal_below, cfg.potion_below)
+    survival = env.survival_action(cfg.heal_below, cfg.potion_below)   # also cures and breaks paralyze
     if survival is not None:
         return survival
+    haste = env._haste_spell()
+    if (cfg.keep_haste and haste and not druid.hasted and druid.mana_ratio > cfg.haste_above
+            and druid.can_cast(SPELLBOOK[haste], now)):
+        return ACTION_HASTE                                    # druids keep Utani Gran Hur up while hunting
 
     every_aggro = env.aggressive_monsters()
     aggro = [m for m in every_aggro if not m.fleeing]   # runners are not chased: SD them or let them come back

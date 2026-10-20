@@ -77,10 +77,25 @@ SPELLBOOK = {
                        min_mlvl_factor=1.2, min_base=7, max_mlvl_factor=2.85, max_base=16),
     "utamo_vita": Spell("utamo_vita", "Magic Shield", "utamo vita", "support", mana=50,
                         cooldown_ms=2000, group=GROUP_SUPPORT, group_cooldown_ms=2000),
+    # Cures: one per condition element; share the healing group with Exura Gran
+    "exana_pox": Spell("exana_pox", "Cure Poison", "exana pox", "heal", EARTH, mana=30,
+                       cooldown_ms=6000, group=GROUP_HEALING, group_cooldown_ms=1000),
+    "exana_flam": Spell("exana_flam", "Cure Burning", "exana flam", "heal", FIRE, mana=30,
+                        cooldown_ms=6000, group=GROUP_HEALING, group_cooldown_ms=1000),
+    "exana_vis": Spell("exana_vis", "Cure Electrification", "exana vis", "heal", ENERGY, mana=30,
+                       cooldown_ms=6000, group=GROUP_HEALING, group_cooldown_ms=1000),
+    # Haste removes paralyze in Tibia; Strong Haste from level 20
+    "utani_hur": Spell("utani_hur", "Haste", "utani hur", "support", mana=60,
+                       cooldown_ms=2000, group=GROUP_SUPPORT, group_cooldown_ms=2000),
+    "utani_gran_hur": Spell("utani_gran_hur", "Strong Haste", "utani gran hur", "support", mana=100,
+                            cooldown_ms=2000, group=GROUP_SUPPORT, group_cooldown_ms=2000),
 }
+CURES = {EARTH: "exana_pox", FIRE: "exana_flam", ENERGY: "exana_vis"}   # condition element -> cure spell
+# (speed factor, flat, duration ms, required level): new speed = base * factor + flat (TFS haste formulas)
+HASTES = {"utani_gran_hur": (1.7, -56, 22_000, 20), "utani_hur": (1.3, -24, 33_000, 14)}
 UTAMO_VITA_DURATION_MS = 200_000
 MONSTER_SPELL_TYPES = ("beam", "wave", "ball")
-SPELL_EFFECTS = ("damage", "dot", "slow")   # direct hit | damage over time (poison, burning...) | speed loss
+SPELL_EFFECTS = ("damage", "dot", "slow", "field")   # hit | damage over time | speed loss | fields on the ground
 
 
 @dataclass(frozen=True)
@@ -97,7 +112,8 @@ class MonsterSpell:
     spread: int = 0           # wave: the cone widens by 2 tiles every `spread` tiles
     range: int = 0            # ball: max distance to the target
     radius: int = 0           # ball: area radius around the target
-    effect: str = "damage"    # SPELL_EFFECTS; "dot": damage_min..max is the total spread over ticks
+    effect: str = "damage"    # SPELL_EFFECTS; "dot": damage_min..max is the total spread over ticks;
+                              # "field": element field (fire / poison / energy) on every tile of the area
     dot_interval_ms: int = 2000
     speed_change: int = 0     # "slow": added to the player's speed (negative) for duration_ms
     duration_ms: int = 0

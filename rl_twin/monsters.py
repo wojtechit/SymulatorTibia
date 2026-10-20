@@ -32,6 +32,9 @@ class MonsterTemplate:
     run_health: int = 0          # flees (no melee) while its HP is at or below this
     heals: tuple = ()            # (min, max, cooldown_ms, chance %) self-heals
     melee_condition: tuple = None  # (element, total damage, tick interval ms) applied by a landed melee hit
+    summons: tuple = ()          # (name, chance %, interval ms) creatures it calls while fighting
+    max_summons: int = 0
+    invisible: tuple = None      # (chance %, interval ms, duration ms) turns invisible (cannot be targeted)
 
     def modifier(self, element):
         return self.resistances.get(element, 100) / 100.0
@@ -47,6 +50,10 @@ class MonsterTemplate:
             behaviour.append("leczy się")
         if self.melee_condition:
             behaviour.append(f"melee: {self.melee_condition[0]} DoT")
+        if self.summons:
+            behaviour.append(f"przyzywa {', '.join(s[0] for s in self.summons)} (max {self.max_summons})")
+        if self.invisible:
+            behaviour.append("znika (niewidzialność)")
         return (f"HP {self.hp}, exp {self.exp}, prędkość {self.speed}, pancerz {self.armor}, "
                 f"melee {self.melee_min}-{self.melee_max}"
                 + (f", modyfikatory: {', '.join(weak)}" if weak else "")
@@ -131,6 +138,11 @@ class MonsterDatabase:
             heals=tuple((int(h["heal"][0]), int(h["heal"][1]), int(h.get("cooldown_ms", 2000)), int(h.get("chance", 100)))
                         for h in entry.get("heals", [])),
             melee_condition=MonsterDatabase._parse_condition(entry["name"], entry.get("melee_condition")),
+            summons=tuple((str(x["name"]), int(x.get("chance", 10)), int(x.get("interval_ms", 2000)))
+                          for x in (entry.get("summons") or {}).get("list", [])),
+            max_summons=int((entry.get("summons") or {}).get("max", 0)),
+            invisible=(lambda v: None if not v else (int(v.get("chance", 10)), int(v.get("cooldown_ms", 2000)),
+                                                     int(v.get("duration_ms", 10_000))))(entry.get("invisible")),
         )
 
     @staticmethod

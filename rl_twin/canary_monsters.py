@@ -33,6 +33,8 @@ ELEMENT_TYPES = {
 }
 SPELL_ELEMENTS = dict(ELEMENT_TYPES, COMBAT_LIFEDRAIN="death", COMBAT_DROWNDAMAGE="ice")   # physical = arrows, spears
 COINS = {"gold coin": 1, "platinum coin": 100, "crystal coin": 10_000}
+FIELDS = {"firefield": "fire", "poisonfield": "earth", "energyfield": "energy"}
+INVISIBLE_MS = 10_000      # Canary monster 'invisible' defenses give no duration; TFS default condition time
 CONDITION_ELEMENTS = {"CONDITION_POISON": "earth", "CONDITION_FIRE": "fire", "CONDITION_FREEZING": "ice",
                       "CONDITION_ENERGY": "energy", "CONDITION_DAZZLED": "holy", "CONDITION_CURSED": "death",
                       "CONDITION_BLEEDING": "physical"}
@@ -148,6 +150,8 @@ def parse_monster(text):
             if element is None or high <= 0:
                 continue
             spell.update(element=element, damage=[low, high], effect="dot")
+        elif kind in FIELDS:                            # fire / poison / energy field on the ground
+            spell.update(element=FIELDS[kind], damage=[0, 0], effect="field")
         elif kind == "speed" and _int(entry, "speedChange") < 0:   # slow / paralyze
             spell.update(element="physical", damage=[0, 0], effect="slow",
                          speed_change=2 * _int(entry, "speedChange"),      # same x2 scale as monster speed
@@ -156,7 +160,7 @@ def parse_monster(text):
             continue
         if not _shape(entry, spell):
             continue
-        label = {"dot": "DoT", "slow": "spowolnienie"}.get(spell.get("effect"), spell["type"])
+        label = {"dot": "DoT", "slow": "spowolnienie", "field": "pole"}.get(spell.get("effect"), spell["type"])
         spell["name"] = f"{spell['element'].capitalize()} {label}" if spell.get("effect") != "slow" else label
         spells.append(spell)
     heals = []
@@ -166,6 +170,17 @@ def parse_monster(text):
             if high > 0:
                 heals.append({"heal": [low, high], "cooldown_ms": _int(entry, "interval", 2000) or 2000,
                               "chance": max(0, min(100, _int(entry, "chance", 100)))})
+    invisible = next(({"chance": max(0, min(100, _int(e, "chance", 10))),
+                       "cooldown_ms": _int(e, "interval", 2000) or 2000,
+                       "duration_ms": _int(e, "duration", INVISIBLE_MS) or INVISIBLE_MS}
+                      for e in _entries(defenses) if e.get("name") == "invisible"), None)
+    summon_block = _block(text, "summon")
+    max_summons = re.search(r"maxSummons\s*=\s*(\d+)", summon_block)
+    summons = []
+    for table in re.findall(r"\{([^{}]*\bname\s*=[^{}]*)\}", summon_block):   # innermost { name = ... } tables
+        e = {k: v.strip().strip('"') for k, v in _PAIR.findall(table)}
+        summons.append({"name": e["name"], "chance": max(0, min(100, _int(e, "chance", 10))),
+                        "interval_ms": _int(e, "interval", 2000) or 2000})
     flags = _block(text, "flags")
     distance = re.search(r"targetDistance\s*=\s*(\d+)", flags)
     run_health = re.search(r"runHealth\s*=\s*(\d+)", flags)
@@ -196,6 +211,10 @@ def parse_monster(text):
         monster["heals"] = heals
     if melee_condition:
         monster["melee_condition"] = melee_condition
+    if summons and max_summons and int(max_summons.group(1)) > 0:
+        monster["summons"] = {"max": int(max_summons.group(1)), "list": summons}
+    if invisible:
+        monster["invisible"] = invisible
     return monster
 
 

@@ -20,7 +20,8 @@ import numpy as np
 
 from .aoe import SPELL_BALL, danger_window, facing_after_step, facing_toward, spell_area, spell_hits
 from .aoe import ball_area
-from .combat import ELEMENT_LABELS_PL, PHYSICAL, SPELLBOOK, UTAMO_VITA_DURATION_MS, POTION_EXHAUST_MS
+from .combat import (CURES, ELEMENT_LABELS_PL, HASTES, PHYSICAL, POTION_EXHAUST_MS, SPELLBOOK,
+                     UTAMO_VITA_DURATION_MS)
 from .entities import GROUND_FLOOR, Druid, Monster
 from .items import ItemDatabase
 from .monsters import MonsterDatabase
@@ -57,6 +58,13 @@ ACTION_USE_AVALANCHE = 14
 ACTION_GOTO_TARGETS = tuple(range(15, 15 + TARGET_SLOTS))      # walk toward the k-th nearest spawn group
 ACTION_GOTO_ARENA = 15 + TARGET_SLOTS
 ACTION_ESCAPE = ACTION_GOTO_ARENA + 1                           # walk toward the nearest stairs / hole
+ACTION_CURE = ACTION_ESCAPE + 1                                 # Exana Pox / Flam / Vis for the worst condition
+ACTION_HASTE = ACTION_CURE + 1                                  # Utani Gran Hur (level 20+) / Utani Hur
+FIELD_MS = 30_000          # monster-made fields on the ground last this long
+# element -> (damage on entering, condition total, condition tick ms, ticks)   (TFS field items, simplified)
+FIELD_EFFECTS = {"fire": (20, 70, 4000, 7), "earth": (0, 80, 4000, 8), "energy": (30, 75, 4000, 3)}
+FIELD_LABELS_PL = {"fire": "pole ognia", "earth": "pole trucizny", "energy": "pole energii"}
+MAX_SUMMONS_ALIVE = 30     # safety cap for the whole map
 CLUSTER_RADIUS = 6         # spawns closer than this (Chebyshev) form one spawn group
 HISTORY_MS = 2_000         # hp / mana trend window
 DAMAGE_WINDOW_MS = 5_000   # damage_rate window
@@ -235,6 +243,8 @@ class DruidHuntEnv:
         self.respawns = 0
         self.escapes_learned = 0
         self._history = deque()      # (time_ms, hp, mana, damage_taken) for the memory features
+        self.fields = {}             # (x, y, z) -> (element, until_ms) fire / poison / energy on the ground
+        self._monster_names = {name.lower(): name for name in self.monster_db.names()}
 
     # ----- Gym API --------------------------------------------------------- #
 
@@ -255,6 +265,7 @@ class DruidHuntEnv:
         self.clusters = self._build_clusters()
         self._hunt_target = None
         self.floor_changed_ms = None
+        self.fields = {}
         self.respawns = 0
         self.escapes_learned = 0
         self._history = deque()
@@ -330,8 +341,32 @@ class DruidHuntEnv:
                 return rewards.invalid_action, DECISION_MS
             druid.move_to(nx, ny)
             duration = self._step_duration(druid, is_diagonal(dx, dy))   # ground speed of the entered tile
+            reward = self._touch_field()
             self._enter_tile(druid)
-            return self._check_waypoint(), duration
+            return reward + self._check_waypoint(), duration
+
+        if action == ACTION_CURE:
+            element = self._curable_condition()
+            spell = SPELLBOOK[CURES[element]] if element else None
+            if spell is None or not druid.can_cast(spell, now):
+                return rewards.invalid_action, DECISION_MS
+            druid.pay_for(spell, now)
+            prevented = druid.cure(element)
+            self._event("heal", f"{spell.name} ({spell.words}): usunięto efekt, -{prevented} obrażeń w czasie.")
+            return 0.0, DECISION_MS
+
+        if action == ACTION_HASTE:
+            key = self._haste_spell()
+            spell = SPELLBOOK[key] if key else None
+            if spell is None or not druid.can_cast(spell, now):
+                return rewards.invalid_action, DECISION_MS
+            factor, flat, duration, _ = HASTES[key]
+            was_slowed = druid.slowed
+            druid.pay_for(spell, now)
+            druid.haste(factor, flat, duration, now)
+            self._event("shield", f"{spell.name} ({spell.words}): prędkość {druid.speed}"
+                                  + (" - paraliż zdjęty." if was_slowed else "."))
+            return 0.0, DECISION_MS
 
         if action in ACTION_GOTO_TARGETS or action in (ACTION_GOTO_ARENA, ACTION_ESCAPE):
             step = self._macro_step(action)
@@ -412,6 +447,10 @@ class DruidHuntEnv:
             return reward
         exp, loot = self.economy.book_kill(target)
         target.died_at = target.known_dead_at = self.time_ms
+        for summon in target.summoned:
+            if summon.alive:
+                summon.hp = 0                                   # summons vanish with their master (no exp)
+        target.summoned = []
         self.kills += 1
         self.experience = self.economy.experience
         self._event("kill", f"{target.name} ginie! +{exp:.0f} exp, loot ~{loot} gp.")
@@ -501,9 +540,14 @@ class DruidHuntEnv:
             if 0 <= nx < cols and 0 <= ny < rows and field[ny, nx] < here:
                 cost = float(field[ny, nx]) + (self.config.diagonal_multiplier if dx and dy else 1.0)
                 options.append((cost, dx, dy))
-        for _, dx, dy in sorted(options):
-            if self._movement_blocker(druid.x + dx, druid.y + dy, druid.z) is None:
-                return dx, dy
+        options.sort()
+        for avoid_fields in (True, False):                  # like the client's autowalk: around fields if possible
+            for _, dx, dy in options:
+                tile = (druid.x + dx, druid.y + dy, druid.z)
+                if avoid_fields and tile in self.fields:
+                    continue
+                if self._movement_blocker(*tile) is None:
+                    return dx, dy
         return None
 
     def waypoint_step(self):
@@ -523,17 +567,17 @@ class DruidHuntEnv:
     def _build_clusters(self):
         """Group spawn points (monster homes) that lie close together on one floor."""
         clusters = []
-        for index, monster in enumerate(self.monsters):
+        for monster in self.monsters:
             hx, hy, hz = monster.home
             for cluster in clusters:
-                if cluster["z"] == hz and any(chebyshev(hx, hy, *self.monsters[j].home[:2]) <= CLUSTER_RADIUS
-                                              for j in cluster["members"]):
-                    cluster["members"].append(index)
+                if cluster["z"] == hz and any(chebyshev(hx, hy, *m.home[:2]) <= CLUSTER_RADIUS
+                                              for m in cluster["members"]):
+                    cluster["members"].append(monster)
                     break
             else:
-                clusters.append({"z": hz, "members": [index], "visited_ms": None})
+                clusters.append({"z": hz, "members": [monster], "visited_ms": None})
         for cluster in clusters:
-            homes = [self.monsters[j].home for j in cluster["members"]]
+            homes = [m.home for m in cluster["members"]]
             mx = sum(h[0] for h in homes) / len(homes)
             my = sum(h[1] for h in homes) / len(homes)
             cluster["x"], cluster["y"] = min(((h[0], h[1]) for h in homes),
@@ -548,8 +592,7 @@ class DruidHuntEnv:
         druid, now = self.druid, self.time_ms
         visited = cluster["visited_ms"]
         count = 0
-        for j in cluster["members"]:
-            m = self.monsters[j]
+        for m in cluster["members"]:
             if m.z == druid.z and in_view(druid.x, druid.y, m.x, m.y):
                 count += 1 if m.alive else 0
             elif m.known_dead_at is not None and now - m.known_dead_at < m.respawn_ms:
@@ -584,7 +627,7 @@ class DruidHuntEnv:
             return
         druid, now = self.druid, self.time_ms
         for m in self.monsters:
-            if m.alive or m.died_at is None or now - m.died_at < m.respawn_ms:
+            if m.alive or m.died_at is None or now - m.died_at < m.respawn_ms or m.master is not None:
                 continue
             hx, hy, hz = m.home
             if hz == druid.z and in_view(druid.x, druid.y, hx, hy):
@@ -599,6 +642,11 @@ class DruidHuntEnv:
         """Respawns, memory and shaping for decisions the RL policy now owns (lure size, escapes)."""
         self._respawn()
         self._remember()
+        now = self.time_ms
+        if self.fields:
+            self.fields = {tile: field for tile, field in self.fields.items() if field[1] > now}
+        if any(m.master is not None and not m.alive for m in self.monsters):
+            self.monsters = [m for m in self.monsters if m.master is None or m.alive]
         rewards = self.config.rewards
         reward = 0.0
         if not self.tactics.config.enabled:
@@ -703,14 +751,108 @@ class DruidHuntEnv:
                    and 0 <= m.respawn_ms - (now - m.known_dead_at) <= RESPAWN_SOON_MS)
         return hp_trend, mana_trend, damage_rate, min(soon, 5) / 5.0
 
-    def survival_action(self, heal_below, potion_below):
-        """Deterministic safety layer used outside FIGHT: heal first, then mana."""
+    def survival_action(self, heal_below, potion_below, cure_above=0.10):
+        """Deterministic safety layer: heal, mana, cure a heavy condition, break a paralyze with haste."""
         druid, now = self.druid, self.time_ms
         if druid.hp_ratio < heal_below and druid.can_cast(SPELLBOOK["exura_gran"], now):
             return ACTION_HEAL
         if druid.mana_ratio < potion_below and druid.can_drink_potion(now):
             return ACTION_MANA_POTION
+        element = self._curable_condition()
+        if (element and druid.conditions[element][0] * druid.conditions[element][1] >= cure_above * druid.max_hp
+                and druid.can_cast(SPELLBOOK[CURES[element]], now)):
+            return ACTION_CURE
+        haste = self._haste_spell()
+        if druid.slowed and haste and druid.can_cast(SPELLBOOK[haste], now):
+            return ACTION_HASTE
         return None
+
+    def _curable_condition(self):
+        """Element of the condition with the most damage left that a druid spell can cure, or None."""
+        options = [(state[0] * state[1], element) for element, state in self.druid.conditions.items()
+                   if element in CURES]
+        return max(options)[1] if options else None
+
+    def _haste_spell(self):
+        return next((key for key, (*_, level) in HASTES.items() if self.druid.level >= level), None)
+
+    # ----- fields, summons, invisibility ------------------------------------- #
+
+    def _place_fields(self, monster, spell, now):
+        """A field spell covers the area around the player with fire / poison / energy."""
+        druid = self.druid
+        grid = self._grid_list(monster.z)
+        cx, cy = druid.x, druid.y
+        radius = max(1, spell.radius)
+        tiles = []
+        for dx, dy in ball_area(radius):
+            x, y = cx + dx, cy + dy
+            if not (0 <= x < self.config.cols and 0 <= y < self.config.rows) or grid[y][x]:
+                continue
+            if (x, y, monster.z) in self.transitions or not has_line_of_sight(grid, cx, cy, x, y):
+                continue
+            self.fields[(x, y, monster.z)] = (spell.element, now + FIELD_MS)
+            tiles.append((x, y))
+        if self.record_events and tiles:
+            self.aoe_flashes.append((tiles, monster.z, spell.element, now + AOE_FLASH_MS))
+        self._event("warn", f"{monster.name}: {FIELD_LABELS_PL.get(spell.element, 'pole')} na {len(tiles)} polach.")
+        return self._touch_field()
+
+    def _touch_field(self):
+        """Standing on / entering a field: entry damage plus its condition."""
+        druid = self.druid
+        field = self.fields.get(druid.position)
+        if field is None or field[1] <= self.time_ms or not druid.alive:
+            return 0.0
+        element = field[0]
+        hit, total, interval, ticks = FIELD_EFFECTS.get(element, (0, 0, 4000, 1))
+        reward = 0.0
+        if hit:
+            result = druid.take_damage(hit, element, self.rng)
+            reward += self._register_player_damage(FIELD_LABELS_PL.get(element, "pole"), result)
+        if total:
+            druid.add_condition(element, total, interval, self.time_ms, ticks=ticks)
+        return reward
+
+    def _summon(self, monster, now):
+        """Canary monster.summon: every interval roll the chance while below maxSummons."""
+        template = monster.template
+        monster.summoned = [s for s in monster.summoned if s.alive]
+        if len(monster.summoned) >= template.max_summons:
+            return
+        if sum(1 for m in self.monsters if m.master is not None and m.alive) >= MAX_SUMMONS_ALIVE:
+            return
+        for i, (name, chance, interval) in enumerate(template.summons):
+            if now < monster.next_summon_ms[i]:
+                continue
+            monster.next_summon_ms[i] = now + interval
+            real = self._monster_names.get(name.lower())
+            if real is None or self.rng.random() * 100 >= chance:
+                continue
+            spot = next(((monster.x + dx, monster.y + dy) for dx, dy in MOVE_DELTAS.values()
+                         if self._is_free(monster.x + dx, monster.y + dy, monster.z)), None)
+            if spot is None:
+                return
+            summon = Monster(self.monster_db.get(real), spot[0], spot[1], monster.z, respawn_ms=0)
+            summon.master = monster
+            summon.experience = 0              # summons give no experience and no loot
+            summon.loot_value = 0
+            summon.aggro = True
+            summon.lured = True
+            monster.summoned.append(summon)
+            self.monsters.append(summon)
+            self._event("warn", f"{monster.name} przyzywa: {real}.")
+            if len(monster.summoned) >= template.max_summons:
+                return
+
+    def _maybe_vanish(self, monster, now):
+        chance, interval, duration = monster.template.invisible
+        if now < monster.next_invisible_ms or monster.invisible(now):
+            return
+        monster.next_invisible_ms = now + interval
+        if self.rng.random() * 100 < chance:
+            monster.invisible_until_ms = now + duration
+            self._event("warn", f"{monster.name} staje się niewidzialny ({duration / 1000:.0f} s).")
 
     def _spend(self, supply):
         """Book a consumed supply; returns its reward cost (positive number)."""
@@ -720,7 +862,8 @@ class DruidHuntEnv:
         """((x, y), targets) for the tile hitting the most monsters, or None when nothing is in reach."""
         druid = self.druid
         grid = self._grid_list(druid.z)
-        monsters = [m for m in self.monsters if m.alive and m.z == druid.z and in_view(druid.x, druid.y, m.x, m.y)]
+        everyone = [m for m in self.monsters if m.alive and m.z == druid.z and in_view(druid.x, druid.y, m.x, m.y)]
+        monsters = [m for m in everyone if not m.invisible(self.time_ms)]   # aim at what the player sees
         if not monsters:
             return None
         rows, cols = len(grid), len(grid[0])
@@ -732,7 +875,7 @@ class DruidHuntEnv:
             if (chebyshev(druid.x, druid.y, cx, cy) > AVALANCHE.range or not in_view(druid.x, druid.y, cx, cy)
                     or not has_line_of_sight(grid, druid.x, druid.y, cx, cy)):
                 continue
-            hit = [m for m in monsters if (m.x - cx, m.y - cy) in AVALANCHE_AREA_SET
+            hit = [m for m in everyone if (m.x - cx, m.y - cy) in AVALANCHE_AREA_SET
                    and has_line_of_sight(grid, cx, cy, m.x, m.y)]
             score = (len(hit), -sum(m.hp for m in hit))
             if hit and (best is None or score > best[0]):
@@ -757,7 +900,7 @@ class DruidHuntEnv:
         druid = self.druid
         grid = self._grid_list(druid.z)
         candidates = [m for m in self.monsters
-                      if m.alive and m.z == druid.z
+                      if m.alive and m.z == druid.z and not m.invisible(self.time_ms)
                       and chebyshev(druid.x, druid.y, m.x, m.y) <= attack_range
                       and in_view(druid.x, druid.y, m.x, m.y)
                       and has_line_of_sight(grid, druid.x, druid.y, m.x, m.y)]
@@ -817,7 +960,7 @@ class DruidHuntEnv:
     def _monsters_think(self, now):
         druid = self.druid
         reward = 0.0
-        for monster in self.monsters:
+        for monster in list(self.monsters):                  # summons may join during the loop
             if not monster.alive or monster.z != druid.z:
                 continue
             visible = in_view(monster.x, monster.y, druid.x, druid.y)
@@ -837,6 +980,10 @@ class DruidHuntEnv:
 
             if monster.template.heals:
                 self._monster_heal(monster, now)
+            if monster.template.summons and monster.master is None:
+                self._summon(monster, now)
+            if monster.template.invisible:
+                self._maybe_vanish(monster, now)
             if now >= monster.next_move_ms and self._monster_wants_step(monster):
                 self._monster_step(monster, now)
 
@@ -869,6 +1016,11 @@ class DruidHuntEnv:
             if not has_line_of_sight(self._grid_list(monster.z), monster.x, monster.y, druid.x, druid.y):
                 continue
             monster.facing = facing
+            if spell.effect == "field":
+                reward += self._place_fields(monster, spell, now)
+                if not druid.alive:
+                    break
+                continue
             if spell.effect != "damage":
                 self._spell_effect(monster, spell, now)
                 continue
@@ -1156,6 +1308,8 @@ class DruidHuntEnv:
                 "sd": cd.spell_remaining(sd, now) / sd.cooldown_ms,
                 "rod": druid.auto_attack_remaining_ms(now) / rod.attack_interval_ms if rod else 0.0,
                 "avalanche": cd.spell_remaining(AVALANCHE, now) / AVALANCHE.cooldown_ms,
+                "cure": cd.spell_remaining(SPELLBOOK["exana_pox"], now) / SPELLBOOK["exana_pox"].cooldown_ms,
+                "haste": cd.spell_remaining(SPELLBOOK["utani_hur"], now) / SPELLBOOK["utani_hur"].cooldown_ms,
             },
             avalanche_runes=druid.avalanche_runes,
             avalanche_hits=self._avalanche_hits(),
@@ -1169,6 +1323,8 @@ class DruidHuntEnv:
             absolute_position=self.config.absolute_position,
             condition_damage=druid.condition_damage_left,
             slowed=druid.slowed,
+            hasted=druid.hasted,
+            field_here=druid.position in self.fields,
             max_hp=druid.max_hp,
             sd_runes=druid.sd_runes,
             rune_range=RUNE_RANGE,
@@ -1194,15 +1350,15 @@ class DruidHuntEnv:
                 spell_cooldown_ratio=self._spell_cooldown_ratio(m, now),
                 ranged=m.template.target_distance > 1,
                 fleeing=m.fleeing,
-            ) for m in self.monsters if m.alive],
+            ) for m in self.monsters if m.alive and not m.invisible(now)],
             next_waypoint=self.waypoints[self.waypoint_index] if self.waypoints else None,
             waypoint_path=self._waypoint_path(),
-            danger=danger_window(
+            danger=self._danger_with_fields(danger_window(
                 druid.x, druid.y, VIEW_RADIUS,
                 [(m.x, m.y, m.facing, m.directional_spells) for m in self.monsters
-                 if m.alive and m.z == druid.z and m.directional_spells
+                 if m.alive and m.z == druid.z and m.directional_spells and not m.invisible(now)
                  and in_view(m.x, m.y, druid.x, druid.y)],
-                self.collision(druid.z), grid),
+                self.collision(druid.z), grid)),
         )
 
     def _waypoint_path(self):
@@ -1235,6 +1391,17 @@ class DruidHuntEnv:
         if field is False:
             return None
         return path_direction(field, druid.x, druid.y, self.config.diagonal_multiplier)
+
+    def _danger_with_fields(self, danger):
+        """Fields on the ground are dangerous tiles too (same channel the policy already reads)."""
+        if not self.fields:
+            return danger
+        druid = self.druid
+        for (x, y, z) in self.fields:
+            wx, wy = x - druid.x + VIEW_RADIUS, y - druid.y + VIEW_RADIUS
+            if z == druid.z and 0 <= wx < danger.shape[1] and 0 <= wy < danger.shape[0]:
+                danger[wy, wx] = 1.0
+        return danger
 
     def _escape_vector(self):
         routes = self.escape_routes(self.druid.z)

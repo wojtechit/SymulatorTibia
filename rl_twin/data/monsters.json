@@ -15,7 +15,10 @@
   "run_health": "optional: flees and stops melee while HP <= this (Canary runHealth)",
   "heals": "optional list: {heal: [min, max], cooldown_ms, chance} self-heal attempts",
   "melee_condition": "optional: {element, damage (total), interval_ms (per tick)} damage over time from a landed melee hit (poison, burning)",
-  "spells.effect": "optional: damage (default) | dot (damage = total over ticks, dot_interval_ms) | slow (speed_change < 0, duration_ms)"
+  "spells.effect": "optional: damage (default) | dot (damage = total over ticks, dot_interval_ms) | slow (speed_change < 0, duration_ms)",
+  "summons": "optional: {max, list: [{name, chance, interval_ms}]} creatures called while fighting (no exp/loot, vanish with the master)",
+  "invisible": "optional: {chance, cooldown_ms, duration_ms} turns invisible: cannot be targeted, not observed",
+  "spells.effect=field": "fire / poison / energy field on every tile of the area (lasts 30 s, hurts on entry)"
  },
  "_source": "Approximate values from general Tibia knowledge. Verify against TibiaWiki before relying on exact numbers.",
  "monsters": [
@@ -151,8 +154,32 @@
      "range": 7,
      "radius": 1,
      "name": "Earth ball"
+    },
+    {
+     "cooldown_ms": 2000,
+     "chance": 10,
+     "element": "earth",
+     "damage": [
+      0,
+      0
+     ],
+     "effect": "field",
+     "type": "ball",
+     "range": 7,
+     "radius": 1,
+     "name": "Earth pole"
     }
-   ]
+   ],
+   "summons": {
+    "max": 2,
+    "list": [
+     {
+      "name": "Poison Spider",
+      "chance": 10,
+      "interval_ms": 2000
+     }
+    ]
+   }
   },
   {
    "name": "Dragon",
@@ -273,6 +300,20 @@
      "chance": 15,
      "range": 7,
      "radius": 4
+    },
+    {
+     "cooldown_ms": 2000,
+     "chance": 10,
+     "element": "fire",
+     "damage": [
+      0,
+      0
+     ],
+     "effect": "field",
+     "type": "ball",
+     "range": 7,
+     "radius": 4,
+     "name": "Fire pole"
     }
    ],
    "loot_value": 850,
@@ -463,8 +504,32 @@
      "range": 7,
      "radius": 1,
      "name": "spowolnienie"
+    },
+    {
+     "cooldown_ms": 2000,
+     "chance": 10,
+     "element": "fire",
+     "damage": [
+      0,
+      0
+     ],
+     "effect": "field",
+     "type": "ball",
+     "range": 7,
+     "radius": 1,
+     "name": "Fire pole"
     }
-   ]
+   ],
+   "summons": {
+    "max": 1,
+    "list": [
+     {
+      "name": "fire elemental",
+      "chance": 10,
+      "interval_ms": 2000
+     }
+    ]
+   }
   }
  ]
 }

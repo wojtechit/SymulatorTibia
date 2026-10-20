@@ -91,6 +91,8 @@ class Druid(Entity):
         self.next_auto_attack_ms = 0
         self.base_speed = self.speed
         self.slow_until_ms = 0
+        self.haste_until_ms = 0
+        self.haste_speed = 0
         self.conditions = {}          # element -> [damage per tick, ticks left, next tick ms, interval ms]
 
     # ----- conditions (Canary: poison, burning, freezing...; speed changes) ----- #
@@ -121,13 +123,30 @@ class Druid(Entity):
         return sum(per_tick * ticks for per_tick, ticks, _, _ in self.conditions.values())
 
     def slow(self, change, duration_ms, now_ms):
-        """Paralyze / slow: speed lowered (not below MIN_SPEED) until it wears off; stronger one wins."""
-        self.speed = max(MIN_SPEED, min(self.speed, self.base_speed + int(change)))
+        """Paralyze / slow: cancels haste, speed lowered (not below MIN_SPEED) until it wears off."""
+        self.haste_until_ms = 0
+        self.speed = max(MIN_SPEED, min(self.speed if self.slowed else self.base_speed, self.base_speed + int(change)))
         self.slow_until_ms = max(self.slow_until_ms, now_ms + int(duration_ms))
 
     @property
     def slowed(self):
         return self.speed < self.base_speed
+
+    @property
+    def hasted(self):
+        return self.speed > self.base_speed
+
+    def haste(self, factor, flat, duration_ms, now_ms):
+        """Utani (Gran) Hur: removes paralyze / slow and raises speed for duration_ms."""
+        self.slow_until_ms = 0
+        self.haste_speed = max(self.base_speed, int(self.base_speed * factor + flat))
+        self.haste_until_ms = now_ms + int(duration_ms)
+        self.speed = self.haste_speed
+
+    def cure(self, element):
+        """Exana Pox / Flam / Vis: removes the condition of that element. Returns damage prevented."""
+        state = self.conditions.pop(element, None)
+        return 0 if state is None else state[0] * state[1]
 
     @property
     def mana_ratio(self):
@@ -226,6 +245,8 @@ class Druid(Entity):
             self.restore_mana(REGEN_MANA)
         if self.slowed and now_ms >= self.slow_until_ms:
             self.speed = self.base_speed
+        if self.hasted and now_ms >= self.haste_until_ms:
+            self.speed = self.base_speed
         if self.utamo_active and now_ms >= self.utamo_expires_ms:
             self.utamo_active = False
             return True
@@ -243,6 +264,11 @@ class Monster(Entity):
         self.lured = False                         # already counted as pulled (learned-lure reward)
         self.seen_alive_ms = None                  # last time the player saw it alive (memory)
         self.next_heal_ms = [0] * len(template.heals)
+        self.master = None                         # set on summons: no exp, no respawn, vanish with it
+        self.summoned = []
+        self.next_summon_ms = [0] * len(template.summons)
+        self.invisible_until_ms = 0
+        self.next_invisible_ms = 0
         self.armor = template.armor
         self.resistances = template.resistances
         self.experience = template.exp
@@ -266,6 +292,14 @@ class Monster(Entity):
         self.next_move_ms = 0
         self.next_spell_ms = [0] * len(self.template.spells)
         self.next_heal_ms = [0] * len(self.template.heals)
+        self.summoned = []
+        self.next_summon_ms = [0] * len(self.template.summons)
+        self.invisible_until_ms = 0
+        self.next_invisible_ms = 0
+
+    def invisible(self, now_ms):
+        """Cannot be targeted or seen by the player (it still attacks)."""
+        return now_ms < self.invisible_until_ms
 
     @property
     def fleeing(self):

@@ -31,6 +31,7 @@ ACTION_NAMES = [
     "exori_frigo", "exori_tera", "heal", "mana_potion", "wait",
     "use_sd", "use_avalanche",
     *[f"goto_target_{k}" for k in range(TARGET_SLOTS)], "goto_arena", "escape_stairs",
+    "cure", "haste",
 ]
 ACTION_LABELS_PL = [
     "Góra", "Dół", "Lewo", "Prawo",
@@ -38,6 +39,7 @@ ACTION_LABELS_PL = [
     "Exori Frigo (lód)", "Exori Tera (ziemia)", "Exura Gran", "Mikstura many", "Czekaj",
     "Sudden Death (runa)", "Avalanche (runa)",
     *[f"Idź do grupy spawnów {k + 1}" for k in range(TARGET_SLOTS)], "Idź na arenę", "Ucieczka schodami",
+    "Exana Pox/Flam/Vis (leczenie efektu)", "Utani (Gran) Hur (haste)",
 ]
 
 SCALAR_FEATURES = [
@@ -62,6 +64,7 @@ SCALAR_FEATURES = [
     "hp_trend", "mana_trend", "damage_rate", "respawn_soon",
     "escape_dx", "escape_dy", "escape_path",
     "condition_damage", "slowed",
+    "cooldown_cure", "cooldown_haste", "hasted", "field_here",
 ]
 _WINDOW = [(dx, dy) for dy in range(-VIEW_RADIUS, VIEW_RADIUS + 1)
            for dx in range(-VIEW_RADIUS, VIEW_RADIUS + 1)]
@@ -129,6 +132,8 @@ class GameSnapshot:
     absolute_position: bool = True # False: player_x / player_y are zeroed (policy does not memorise one map)
     condition_damage: int = 0      # damage still to come from poison / burning / ... on the player
     slowed: bool = False           # player speed lowered by a slow / paralyze
+    hasted: bool = False           # Utani (Gran) Hur active
+    field_here: bool = False       # standing on a fire / poison / energy field
     max_hp: int = 1
 
 
@@ -248,6 +253,10 @@ def encode_observation(snap):
     i += 3
     obs[i] = min(1.0, snap.condition_damage / max(1, snap.max_hp))
     obs[i + 1] = 1.0 if snap.slowed else 0.0
+    obs[i + 2] = cds.get("cure", 0.0)
+    obs[i + 3] = cds.get("haste", 0.0)
+    obs[i + 4] = 1.0 if snap.hasted else 0.0
+    obs[i + 5] = 1.0 if snap.field_here else 0.0
 
     # Local window, out-of-bounds counts as blocked
     r = VIEW_RADIUS

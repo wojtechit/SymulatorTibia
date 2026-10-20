@@ -61,11 +61,13 @@ from .combat import ELEMENT_LABELS_PL, SPELLBOOK
 from .assets import AssetManager, sprite_entries
 from .entities import GROUND_FLOOR, Druid
 from .env import (
+    ACTION_CURE,
     ACTION_DOWN,
     ACTION_DOWN_LEFT,
     ACTION_DOWN_RIGHT,
     ACTION_EXORI_FRIGO,
     ACTION_EXORI_TERA,
+    ACTION_HASTE,
     ACTION_HEAL,
     ACTION_LEFT,
     ACTION_MANA_POTION,
@@ -909,6 +911,7 @@ class GridCanvas(QGraphicsView):
         for monster, item in zip(env.monsters, self._monster_items):
             self._update_entity(item, monster.x, monster.y, monster.hp_ratio, None, False,
                                 monster.alive and monster.z == self.floor, facing=monster.facing)
+            item["body"].setOpacity(0.3 if monster.invisible(env.time_ms) else 1.0)   # the player cannot see it
         self._draw_combat_overlays(env)
 
     def _draw_combat_overlays(self, env):
@@ -924,6 +927,11 @@ class GridCanvas(QGraphicsView):
             for tx, ty in tiles:
                 if self._in_bounds(tx, ty):
                     self._add_overlay_rect(tx, ty, QBrush(color), QPen(Qt.NoPen), 12)
+        for (fx, fy, fz), (element, _until) in env.fields.items():          # fire / poison / energy fields
+            if fz == self.floor and self._in_bounds(fx, fy):
+                color = QColor(*ELEMENT_COLORS.get(element, (255, 255, 255)), 70)
+                pen = QPen(QColor(*ELEMENT_COLORS.get(element, (255, 255, 255)), 200), 1, Qt.DotLine)
+                self._add_overlay_rect(fx, fy, QBrush(color, Qt.Dense4Pattern), pen, 10)
         if self.show_danger and env.druid.z == self.floor:
             danger = env.snapshot().danger
             radius = danger.shape[0] // 2
@@ -1965,7 +1973,8 @@ class MainWindow(QMainWindow):
         live.addWidget(self.live_save_input)
         layout.addLayout(live)
         keys = QLabel("Klawisze: W/A/S/D lub strzałki - ruch, Q/E/Z/C - ukosy, 1 - Exori Frigo, "
-                      "2 - Exori Tera, 3 - Exura Gran, 4 - mikstura many, 5 - runa SD, 6 - Avalanche")
+                      "2 - Exori Tera, 3 - Exura Gran, 4 - mikstura many, 5 - runa SD, 6 - Avalanche, "
+                      "7 - Exana Pox/Flam/Vis, 8 - Utani Gran Hur")
         keys.setObjectName("hint")
         keys.setWordWrap(True)
         layout.addWidget(keys)
@@ -2116,6 +2125,7 @@ class MainWindow(QMainWindow):
             Qt.Key_Z: ACTION_DOWN_LEFT, Qt.Key_C: ACTION_DOWN_RIGHT,
             Qt.Key_1: ACTION_EXORI_FRIGO, Qt.Key_2: ACTION_EXORI_TERA,
             Qt.Key_3: ACTION_HEAL, Qt.Key_4: ACTION_MANA_POTION, Qt.Key_5: ACTION_USE_SD, Qt.Key_6: ACTION_USE_AVALANCHE,
+            Qt.Key_7: ACTION_CURE, Qt.Key_8: ACTION_HASTE,
         }
         QApplication.instance().installEventFilter(self)
 
