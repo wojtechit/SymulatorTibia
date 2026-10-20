@@ -68,7 +68,8 @@ def rule_action(env, config=None):
     if survival is not None:
         return survival
 
-    aggro = env.aggressive_monsters()
+    every_aggro = env.aggressive_monsters()
+    aggro = [m for m in every_aggro if not m.fleeing]   # runners are not chased: SD them or let them come back
     if not env.tactics.config.enabled:
         # No automat: the rules also decide when to run for the stairs (same thresholds as the automat)
         tactics = env.tactics.config
@@ -80,6 +81,10 @@ def rule_action(env, config=None):
             recover = env.survival_action(1.0, 1.0)            # regenerate before the next pull
             return ACTION_WAIT if recover is None else recover
     if not aggro:
+        runner = env._select_target(RUNE_RANGE) if every_aggro else None
+        sd = SPELLBOOK["sudden_death"]
+        if runner is not None and druid.sd_runes > 0 and druid.can_use_rune(sd, now):
+            return ACTION_USE_SD
         return env.move_action(env.waypoint_step() if env.waypoints else env.hunt_step())
 
     danger = _danger(env, druid)
@@ -106,7 +111,7 @@ def rule_action(env, config=None):
     sd = SPELLBOOK["sudden_death"]
     rune_target = env._select_target(RUNE_RANGE)
     if (rune_target is not None and druid.sd_runes > 0 and druid.can_use_rune(sd, now)
-            and rune_target.hp_ratio > cfg.sd_min_target_hp):
+            and (rune_target.hp_ratio > cfg.sd_min_target_hp or rune_target.fleeing)):   # finish runners
         return ACTION_USE_SD
 
     nearest = min(chebyshev(druid.x, druid.y, m.x, m.y) for m in aggro)

@@ -33,6 +33,10 @@ ELEMENT_TYPES = {
 }
 SPELL_ELEMENTS = dict(ELEMENT_TYPES, COMBAT_LIFEDRAIN="death", COMBAT_DROWNDAMAGE="ice")   # physical = arrows, spears
 COINS = {"gold coin": 1, "platinum coin": 100, "crystal coin": 10_000}
+CONDITION_ELEMENTS = {"CONDITION_POISON": "earth", "CONDITION_FIRE": "fire", "CONDITION_FREEZING": "ice",
+                      "CONDITION_ENERGY": "energy", "CONDITION_DAZZLED": "holy", "CONDITION_CURSED": "death",
+                      "CONDITION_BLEEDING": "physical"}
+_CONDITION = re.compile(r"type\s*=\s*(CONDITION_\w+)\s*,\s*totalDamage\s*=\s*(\d+)\s*,\s*interval\s*=\s*(\d+)")
 
 _NAME = re.compile(r'createMonsterType\(\s*"([^"]+)"')
 _FIELD = r"monster\.{}\s*=\s*(-?\d+)"
@@ -51,21 +55,31 @@ def _block(text, name):
 
 
 def _entries(block):
-    """Every top-level {key = value, ...} table of a Lua block as a dict of strings (nested tables dropped)."""
-    result, depth, buffer = [], 0, []
+    """
+    Every top-level {key = value, ...} table of a Lua block as a dict of strings. Nested tables are not
+    split into keys; their text is kept under "__nested" (e.g. a melee hit's condition = {...}).
+    """
+    result, depth, buffer, nested = [], 0, [], []
     for char in block:
         if char == "{":
             depth += 1
             if depth == 1:
-                buffer = []
+                buffer, nested = [], []
+            elif depth >= 2:
+                nested.append(char)
         elif char == "}":
             if depth == 1:
                 pairs = {k: v.strip().strip('"') for k, v in _PAIR.findall("".join(buffer))}
                 if pairs:
+                    pairs["__nested"] = "".join(nested)
                     result.append(pairs)
+            elif depth >= 2:
+                nested.append(char)
             depth = max(0, depth - 1)
         elif depth == 1:
             buffer.append(char)
+        elif depth >= 2:
+            nested.append(char)
     return result
 
 
@@ -74,6 +88,27 @@ def _int(pairs, key, default=0):
         return int(float(pairs.get(key, default)))
     except ValueError:
         return default
+
+
+def _shape(entry, spell):
+    """Area of an attack: wave / beam in front, ball on the player, area around the monster, single missile."""
+    length, spread, radius = _int(entry, "length"), _int(entry, "spread"), _int(entry, "radius")
+    # A missile (shootEffect) with a range flies at the player even when the file says target = false
+    target = entry.get("target", "false").strip() == "true" or ("shootEffect" in entry and "range" in entry)
+    reach = _int(entry, "range", 7) or 7
+    if length > 0 and spread > 0:
+        spell.update(type="wave", length=length, spread=spread)
+    elif length > 0:
+        spell.update(type="beam", length=length)
+    elif radius > 0 and target:
+        spell.update(type="ball", range=reach, radius=radius)
+    elif radius > 0:
+        spell.update(type="ball", range=radius, radius=1)
+    elif target:
+        spell.update(type="ball", range=reach, radius=1)
+    else:
+        return False
+    return True
 
 
 def parse_monster(text):
@@ -90,36 +125,50 @@ def parse_monster(text):
         element = ELEMENT_TYPES.get(entry.get("type", ""))
         if element:
             resistances[element] = max(0, min(300, 100 - _int(entry, "percent")))
-    melee, interval, spells = [0, 0], 2000, []
+    melee, interval, spells, melee_condition = [0, 0], 2000, [], None
     for entry in _entries(_block(text, "attacks")):
         kind = entry.get("name", "")
         low, high = sorted((abs(_int(entry, "minDamage")), abs(_int(entry, "maxDamage"))))
         if kind == "melee":
             melee, interval = [low, high], _int(entry, "interval", 2000) or 2000
+            condition = _CONDITION.search(entry.get("__nested", ""))
+            if condition and condition.group(1) in CONDITION_ELEMENTS and int(condition.group(2)) > 0:
+                melee_condition = {"element": CONDITION_ELEMENTS[condition.group(1)],
+                                   "damage": int(condition.group(2)), "interval_ms": int(condition.group(3))}
             continue
-        element = SPELL_ELEMENTS.get(entry.get("type", ""))
-        if kind != "combat" or element is None or high <= 0:
-            continue
-        spell = {"element": element, "damage": [low, high], "cooldown_ms": _int(entry, "interval", 2000) or 2000,
+        spell = {"cooldown_ms": _int(entry, "interval", 2000) or 2000,
                  "chance": max(0, min(100, _int(entry, "chance", 100)))}
-        length, spread, radius = _int(entry, "length"), _int(entry, "spread"), _int(entry, "radius")
-        # A missile (shootEffect) with a range flies at the player even when the file says target = false
-        target = entry.get("target", "false").strip() == "true" or ("shootEffect" in entry and "range" in entry)
-        reach = _int(entry, "range", 7) or 7
-        if length > 0 and spread > 0:
-            spell.update(type="wave", length=length, spread=spread)
-        elif length > 0:
-            spell.update(type="beam", length=length)
-        elif radius > 0 and target:
-            spell.update(type="ball", range=reach, radius=radius)
-        elif radius > 0:
-            spell.update(type="ball", range=radius, radius=1)
-        elif target:
-            spell.update(type="ball", range=reach, radius=1)
+        if kind == "combat":
+            element = SPELL_ELEMENTS.get(entry.get("type", ""))
+            if element is None or high <= 0:
+                continue
+            spell.update(element=element, damage=[low, high])
+        elif kind == "condition":                     # poison / burning cloud: total damage over time
+            element = CONDITION_ELEMENTS.get(entry.get("type", ""))
+            if element is None or high <= 0:
+                continue
+            spell.update(element=element, damage=[low, high], effect="dot")
+        elif kind == "speed" and _int(entry, "speedChange") < 0:   # slow / paralyze
+            spell.update(element="physical", damage=[0, 0], effect="slow",
+                         speed_change=2 * _int(entry, "speedChange"),      # same x2 scale as monster speed
+                         duration_ms=_int(entry, "duration", 5000) or 5000)
         else:
             continue
-        spell["name"] = f"{element.capitalize()} {spell['type']}"
+        if not _shape(entry, spell):
+            continue
+        label = {"dot": "DoT", "slow": "spowolnienie"}.get(spell.get("effect"), spell["type"])
+        spell["name"] = f"{spell['element'].capitalize()} {label}" if spell.get("effect") != "slow" else label
         spells.append(spell)
+    heals = []
+    for entry in _entries(defenses):
+        if entry.get("type") == "COMBAT_HEALING":
+            low, high = sorted((abs(_int(entry, "minDamage")), abs(_int(entry, "maxDamage"))))
+            if high > 0:
+                heals.append({"heal": [low, high], "cooldown_ms": _int(entry, "interval", 2000) or 2000,
+                              "chance": max(0, min(100, _int(entry, "chance", 100)))})
+    flags = _block(text, "flags")
+    distance = re.search(r"targetDistance\s*=\s*(\d+)", flags)
+    run_health = re.search(r"runHealth\s*=\s*(\d+)", flags)
     loot = 0.0
     for entry in _entries(_block(text, "loot")):
         value = COINS.get(entry.get("name", "").lower())
@@ -139,6 +188,14 @@ def parse_monster(text):
     }
     if spells:
         monster["spells"] = spells
+    if distance and int(distance.group(1)) > 1:
+        monster["target_distance"] = int(distance.group(1))
+    if run_health and int(run_health.group(1)) > 0:
+        monster["run_health"] = int(run_health.group(1))
+    if heals:
+        monster["heals"] = heals
+    if melee_condition:
+        monster["melee_condition"] = melee_condition
     return monster
 
 

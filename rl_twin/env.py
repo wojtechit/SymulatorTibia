@@ -43,6 +43,8 @@ from .physics import (
     path_direction,
 )
 
+CONDITION_LABELS_PL = {"earth": "Trucizna", "fire": "Podpalenie", "ice": "Zamrożenie", "energy": "Porażenie",
+                       "holy": "Oślepienie", "death": "Klątwa", "physical": "Krwawienie"}
 DECISION_MS = 100          # game time consumed by a non-movement action
 AOE_FLASH_MS = 600         # how long the GUI shows a monster spell area
 TIME_UNIT_MS = 500         # the -1 step penalty is charged per 500 ms of game time
@@ -58,7 +60,8 @@ ACTION_ESCAPE = ACTION_GOTO_ARENA + 1                           # walk toward th
 CLUSTER_RADIUS = 6         # spawns closer than this (Chebyshev) form one spawn group
 HISTORY_MS = 2_000         # hp / mana trend window
 DAMAGE_WINDOW_MS = 5_000   # damage_rate window
-RESPAWN_SOON_MS = 10_000   # respawn_soon counts known kills that come back within this time
+RESPAWN_SOON_MS = 10_000
+HOME_RADIUS = 2            # idle monsters farther than this from their spawn walk back   # respawn_soon counts known kills that come back within this time
 MOVE_DELTAS = {
     ACTION_UP: (0, -1), ACTION_DOWN: (0, 1), ACTION_LEFT: (-1, 0), ACTION_RIGHT: (1, 0),
     ACTION_UP_LEFT: (-1, -1), ACTION_UP_RIGHT: (1, -1),
@@ -538,14 +541,23 @@ class DruidHuntEnv:
         return clusters
 
     def believed_alive(self, cluster):
-        """Monsters the player expects at a spawn group: seen alive, or not known to be dead / respawned."""
+        """
+        Monsters the player expects at a spawn group: seen alive now; otherwise not known dead (or due to
+        respawn) and not missing when the group was last checked (a monster that ran off is not 'there').
+        """
         druid, now = self.druid, self.time_ms
+        visited = cluster["visited_ms"]
         count = 0
         for j in cluster["members"]:
             m = self.monsters[j]
             if m.z == druid.z and in_view(druid.x, druid.y, m.x, m.y):
                 count += 1 if m.alive else 0
-            elif m.known_dead_at is None or now - m.known_dead_at >= m.respawn_ms:
+            elif m.known_dead_at is not None and now - m.known_dead_at < m.respawn_ms:
+                continue
+            elif (visited is not None and now - visited < m.respawn_ms
+                  and (m.seen_alive_ms is None or m.seen_alive_ms < visited)):
+                continue                                    # checked recently and it was not there
+            else:
                 count += 1
         return count
 
@@ -559,6 +571,7 @@ class DruidHuntEnv:
             if m.z == druid.z and in_view(druid.x, druid.y, m.x, m.y):
                 if m.alive:
                     m.known_dead_at = None
+                    m.seen_alive_ms = now
                 elif m.known_dead_at is None:
                     m.known_dead_at = m.died_at
         self._history.append((now, druid.hp, druid.mana, self.damage_taken))
@@ -790,6 +803,11 @@ class DruidHuntEnv:
             if self.config.use_utamo and not druid.utamo_active and druid.cast_utamo(now):
                 self._event("shield", f"Druid odnawia Utamo Vita. Mana: {druid.mana}/{druid.max_mana}.")
             reward += self._rod_auto_attack(now)
+            for element, damage in druid.due_condition_ticks(now):
+                result = druid.take_damage(damage, element, self.rng)
+                reward += self._register_player_damage(f"{CONDITION_LABELS_PL.get(element, element)} (efekt)", result)
+                if not druid.alive:
+                    return reward
             if any(m.z == druid.z and abs(m.x - druid.x) <= 1 and abs(m.y - druid.y) <= 1 and m.alive
                    for m in self.monsters):
                 self.adjacent_ms += SERVER_TICK_MS
@@ -805,6 +823,7 @@ class DruidHuntEnv:
             visible = in_view(monster.x, monster.y, druid.x, druid.y)
             if not monster.aggro:
                 if not visible:
+                    self._monster_go_home(monster, now)
                     continue
                 monster.aggro = True
                 monster.next_attack_ms = now + monster.attack_interval_ms // 2
@@ -816,7 +835,9 @@ class DruidHuntEnv:
                 self._event("info", f"{monster.name} traci druida z oczu.")
                 continue
 
-            if monster.distance_to(druid) > 1 and now >= monster.next_move_ms:
+            if monster.template.heals:
+                self._monster_heal(monster, now)
+            if now >= monster.next_move_ms and self._monster_wants_step(monster):
                 self._monster_step(monster, now)
 
             if monster.template.spells:
@@ -824,7 +845,7 @@ class DruidHuntEnv:
                 if not druid.alive:
                     break
 
-            if monster.distance_to(druid) <= 1 and now >= monster.next_attack_ms:
+            if monster.distance_to(druid) <= 1 and now >= monster.next_attack_ms and not monster.fleeing:
                 monster.next_attack_ms = now + monster.attack_interval_ms
                 reward += self._monster_melee(monster)
                 if not druid.alive:
@@ -848,6 +869,9 @@ class DruidHuntEnv:
             if not has_line_of_sight(self._grid_list(monster.z), monster.x, monster.y, druid.x, druid.y):
                 continue
             monster.facing = facing
+            if spell.effect != "damage":
+                self._spell_effect(monster, spell, now)
+                continue
             result = druid.take_damage(spell.roll(self.rng), spell.element, self.rng)
             if self.record_events:
                 cx, cy = (druid.x, druid.y) if spell.type == SPELL_BALL else (monster.x, monster.y)
@@ -859,20 +883,105 @@ class DruidHuntEnv:
                 break
         return reward
 
+    def _monster_wants_step(self, monster):
+        """Melee monsters close in; ranged ones (target_distance > 1) hold their distance; fleeing ones run."""
+        druid = self.druid
+        distance = monster.distance_to(druid)
+        if monster.fleeing:
+            return True
+        wanted = monster.template.target_distance
+        if wanted <= 1:
+            return distance > 1
+        if distance != wanted:
+            return True
+        return not has_line_of_sight(self._grid_list(monster.z), monster.x, monster.y, druid.x, druid.y)
+
     def _monster_step(self, monster, now):
         druid = self.druid
         occupied = {(m.x, m.y) for m in self.monsters if m.alive and m is not monster and m.z == monster.z}
-        path = a_star(self._grid_list(monster.z), (monster.x, monster.y), (druid.x, druid.y),
-                      occupied=occupied, diagonal_cost=self.config.diagonal_multiplier)
-        if not path:
+        distance = monster.distance_to(druid)
+        wanted = monster.template.target_distance
+        if monster.fleeing or (wanted > 1 and distance < wanted):
+            step = self._step_away(monster, occupied, None if monster.fleeing else wanted)
+        else:
+            path = a_star(self._grid_list(monster.z), (monster.x, monster.y), (druid.x, druid.y),
+                          occupied=occupied, diagonal_cost=self.config.diagonal_multiplier)
+            step = path[0] if path else None
+        if step is None:
             monster.next_move_ms = now + 4 * SERVER_TICK_MS   # blocked: re-plan shortly
             return
-        nx, ny = path[0]
+        nx, ny = step
         diagonal = is_diagonal(nx - monster.x, ny - monster.y)
         monster.facing = facing_after_step(nx - monster.x, ny - monster.y, monster.facing)
         monster.move_to(nx, ny)
         duration = self._step_duration(monster, diagonal)
         monster.next_move_ms = now + (duration if duration else 10 ** 9)
+
+    def _step_away(self, monster, occupied, keep_at=None):
+        """Free neighbour that increases the distance to the druid (up to keep_at, keeping line of sight)."""
+        druid = self.druid
+        grid = self._grid_list(monster.z)
+        rows, cols = len(grid), len(grid[0])
+        here = chebyshev(monster.x, monster.y, druid.x, druid.y)
+        best = None
+        for dx, dy in MOVE_DELTAS.values():
+            nx, ny = monster.x + dx, monster.y + dy
+            if not (0 <= nx < cols and 0 <= ny < rows) or grid[ny][nx] or (nx, ny) in occupied:
+                continue
+            if (nx, ny) == (druid.x, druid.y) or (nx, ny, monster.z) in self.transitions:
+                continue
+            distance = chebyshev(nx, ny, druid.x, druid.y)
+            if distance <= here:
+                continue
+            if keep_at is not None:
+                if distance > keep_at or not has_line_of_sight(grid, nx, ny, druid.x, druid.y):
+                    continue
+                score = (abs(distance - keep_at), dx != 0 and dy != 0)
+            else:
+                score = (-distance, dx != 0 and dy != 0)
+            if best is None or score < best[0]:
+                best = (score, (nx, ny))
+        return None if best is None else best[1]
+
+    def _monster_go_home(self, monster, now):
+        """Without a target a monster drifts back to its spawn (and is found there again)."""
+        hx, hy, hz = monster.home
+        if now < monster.next_move_ms or hz != monster.z or chebyshev(monster.x, monster.y, hx, hy) <= HOME_RADIUS:
+            return
+        # Spawn tiles never move: one cached distance field per home instead of an A* every step
+        field = distance_field(self.collision(hz), (hx, hy), self.config.diagonal_multiplier)
+        dx, dy, cost = path_direction(field, monster.x, monster.y, self.config.diagonal_multiplier)
+        nx, ny = monster.x + dx, monster.y + dy
+        if (dx, dy) == (0, 0) or cost == float("inf") or not self._is_free(nx, ny, hz, ignore=monster):
+            monster.next_move_ms = now + 20 * SERVER_TICK_MS
+            return
+        monster.facing = facing_after_step(nx - monster.x, ny - monster.y, monster.facing)
+        monster.move_to(nx, ny)
+        duration = self._step_duration(monster, is_diagonal(dx, dy))
+        monster.next_move_ms = now + (duration if duration else 10 ** 9)
+
+    def _monster_heal(self, monster, now):
+        for i, (low, high, cooldown, chance) in enumerate(monster.template.heals):
+            if now < monster.next_heal_ms[i]:
+                continue
+            monster.next_heal_ms[i] = now + cooldown
+            if monster.hp < monster.max_hp and self.rng.random() * 100 < chance:
+                healed = min(monster.max_hp - monster.hp, self.rng.randint(low, high))
+                monster.hp += healed
+                self._event("info", f"{monster.name} leczy się: +{healed} HP ({monster.hp}/{monster.max_hp}).")
+
+    def _spell_effect(self, monster, spell, now):
+        """Non-damage area spells: damage over time (poison cloud, burning) or a slow / paralyze."""
+        druid = self.druid
+        if spell.effect == "dot":
+            total = spell.roll(self.rng)
+            if druid.add_condition(spell.element, total, spell.dot_interval_ms, now):
+                self._event("damage", f"{monster.name}: {CONDITION_LABELS_PL.get(spell.element, spell.element)} "
+                                      f"({total} obr. w czasie).")
+        elif spell.effect == "slow":
+            druid.slow(spell.speed_change, spell.duration_ms, now)
+            self._event("warn", f"{monster.name} spowalnia druida: prędkość {druid.speed}/{druid.base_speed} "
+                                f"na {spell.duration_ms / 1000:.0f} s.")
 
     def _monster_melee(self, monster):
         druid = self.druid
@@ -882,6 +991,12 @@ class DruidHuntEnv:
             return 0.0
         monster.facing = facing_toward(druid.x - monster.x, druid.y - monster.y, monster.facing)
         result = druid.take_damage(raw, PHYSICAL, self.rng)
+        condition = monster.template.melee_condition
+        if condition is not None and result.after_mitigation > 0:
+            element, total, interval = condition
+            if druid.add_condition(element, total, interval, self.time_ms):
+                self._event("damage", f"{monster.name}: {CONDITION_LABELS_PL.get(element, element)} "
+                                      f"({total} obr. w czasie).")
         if result.after_mitigation <= 0:
             self._event("info", f"{monster.name} uderza za {raw}, pancerz blokuje całość.")
             return 0.0
@@ -1052,6 +1167,9 @@ class DruidHuntEnv:
             memory=self._memory_features(),
             escape=self._escape_vector(),
             absolute_position=self.config.absolute_position,
+            condition_damage=druid.condition_damage_left,
+            slowed=druid.slowed,
+            max_hp=druid.max_hp,
             sd_runes=druid.sd_runes,
             rune_range=RUNE_RANGE,
             rod_equipped=rod is not None,
@@ -1074,6 +1192,8 @@ class DruidHuntEnv:
                 facing=m.facing,
                 has_aoe=bool(m.template.spells),
                 spell_cooldown_ratio=self._spell_cooldown_ratio(m, now),
+                ranged=m.template.target_distance > 1,
+                fleeing=m.fleeing,
             ) for m in self.monsters if m.alive],
             next_waypoint=self.waypoints[self.waypoint_index] if self.waypoints else None,
             waypoint_path=self._waypoint_path(),

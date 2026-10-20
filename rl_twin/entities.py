@@ -15,6 +15,8 @@ GROUND_FLOOR = 7          # Tibia floors: 0 (highest) .. 15 (deepest), 7 = groun
 REGEN_INTERVAL_MS = 2000
 REGEN_HP = 1
 REGEN_MANA = 4
+DOT_TICKS = 8          # a condition (poison, burning...) deals its total damage in this many ticks
+MIN_SPEED = 40         # paralyze floor (old speed scale)
 GREAT_MANA_POTION_RANGE = (120, 160)
 
 
@@ -87,6 +89,45 @@ class Druid(Entity):
         self.rod = rod if rod is None or self.level >= rod.level else None
         self.runes = {"sudden_death": max(0, int(sd_runes)), "avalanche": max(0, int(avalanche_runes))}
         self.next_auto_attack_ms = 0
+        self.base_speed = self.speed
+        self.slow_until_ms = 0
+        self.conditions = {}          # element -> [damage per tick, ticks left, next tick ms, interval ms]
+
+    # ----- conditions (Canary: poison, burning, freezing...; speed changes) ----- #
+
+    def add_condition(self, element, total, interval_ms, now_ms, ticks=DOT_TICKS):
+        """Damage over time; a new condition of the same element replaces a weaker remaining one."""
+        per_tick = max(1, int(round(total / ticks)))
+        current = self.conditions.get(element)
+        if current is not None and current[0] * current[1] >= per_tick * ticks:
+            return False
+        self.conditions[element] = [per_tick, ticks, now_ms + interval_ms, interval_ms]
+        return True
+
+    def due_condition_ticks(self, now_ms):
+        """[(element, damage)] ticks due now; expired conditions are removed."""
+        due = []
+        for element, state in list(self.conditions.items()):
+            if now_ms >= state[2]:
+                due.append((element, state[0]))
+                state[1] -= 1
+                state[2] += state[3]
+                if state[1] <= 0:
+                    del self.conditions[element]
+        return due
+
+    @property
+    def condition_damage_left(self):
+        return sum(per_tick * ticks for per_tick, ticks, _, _ in self.conditions.values())
+
+    def slow(self, change, duration_ms, now_ms):
+        """Paralyze / slow: speed lowered (not below MIN_SPEED) until it wears off; stronger one wins."""
+        self.speed = max(MIN_SPEED, min(self.speed, self.base_speed + int(change)))
+        self.slow_until_ms = max(self.slow_until_ms, now_ms + int(duration_ms))
+
+    @property
+    def slowed(self):
+        return self.speed < self.base_speed
 
     @property
     def mana_ratio(self):
@@ -183,6 +224,8 @@ class Druid(Entity):
             self.next_regen_ms += REGEN_INTERVAL_MS
             self.heal(REGEN_HP)
             self.restore_mana(REGEN_MANA)
+        if self.slowed and now_ms >= self.slow_until_ms:
+            self.speed = self.base_speed
         if self.utamo_active and now_ms >= self.utamo_expires_ms:
             self.utamo_active = False
             return True
@@ -198,6 +241,8 @@ class Monster(Entity):
         self.died_at = None
         self.known_dead_at = None                  # what the player knows: when it was seen dead
         self.lured = False                         # already counted as pulled (learned-lure reward)
+        self.seen_alive_ms = None                  # last time the player saw it alive (memory)
+        self.next_heal_ms = [0] * len(template.heals)
         self.armor = template.armor
         self.resistances = template.resistances
         self.experience = template.exp
@@ -220,6 +265,12 @@ class Monster(Entity):
         self.next_attack_ms = 0
         self.next_move_ms = 0
         self.next_spell_ms = [0] * len(self.template.spells)
+        self.next_heal_ms = [0] * len(self.template.heals)
+
+    @property
+    def fleeing(self):
+        """Canary runHealth: below this HP the monster runs and stops melee."""
+        return self.alive and self.hp <= self.template.run_health
 
     def roll_melee(self, rng):
         return rng.randint(self.template.melee_min, self.template.melee_max)

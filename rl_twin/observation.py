@@ -57,10 +57,11 @@ SCALAR_FEATURES = [
     "cooldown_avalanche", "avalanche_runes_left", "avalanche_best_hits", "waypoint_floor_delta",
     "state_lure", "state_pull", "state_fight", "state_escape", "state_recover", "state_return",
     "in_arena", "arena_dx", "arena_dy", "orbit_dx", "orbit_dy",
-    *[f"m{k}_{f}" for k in range(MONSTER_SLOTS) for f in ("dx", "dy", "hp", "adjacent", "threat")],
+    *[f"m{k}_{f}" for k in range(MONSTER_SLOTS) for f in ("dx", "dy", "hp", "adjacent", "threat", "ranged", "fleeing")],
     *[f"t{k}_{f}" for k in range(TARGET_SLOTS) for f in ("dx", "dy", "path", "alive", "age")],
     "hp_trend", "mana_trend", "damage_rate", "respawn_soon",
     "escape_dx", "escape_dy", "escape_path",
+    "condition_damage", "slowed",
 ]
 _WINDOW = [(dx, dy) for dy in range(-VIEW_RADIUS, VIEW_RADIUS + 1)
            for dx in range(-VIEW_RADIUS, VIEW_RADIUS + 1)]
@@ -88,6 +89,8 @@ class MonsterView:
     facing: tuple = (0, 1)         # cardinal direction the monster looks at
     has_aoe: bool = False          # owns beam / wave / ball spells
     spell_cooldown_ratio: float = 1.0
+    ranged: bool = False           # keeps distance (Canary targetDistance > 1)
+    fleeing: bool = False          # below its run-health: runs and does not melee
 
 
 @dataclass
@@ -124,6 +127,9 @@ class GameSnapshot:
     memory: tuple = None           # (hp_trend, mana_trend, damage_rate, respawn_soon) short-term history
     escape: tuple = None           # (dx, dy, path_cost) first step toward the nearest stairs / hole
     absolute_position: bool = True # False: player_x / player_y are zeroed (policy does not memorise one map)
+    condition_damage: int = 0      # damage still to come from poison / burning / ... on the player
+    slowed: bool = False           # player speed lowered by a slow / paralyze
+    max_hp: int = 1
 
 
 def _visible(snap, m):
@@ -219,10 +225,11 @@ def encode_observation(snap):
             m = ordered[k]
             ddx, ddy = m.x - px, m.y - py
             aligned = ddx == 0 or ddy == 0 or abs(ddx) == abs(ddy)
-            obs[i: i + 5] = (ddx / VIEW_RANGE_X, ddy / VIEW_RANGE_Y, m.hp_ratio,
+            obs[i: i + 7] = (ddx / VIEW_RANGE_X, ddy / VIEW_RANGE_Y, m.hp_ratio,
                              1.0 if max(abs(ddx), abs(ddy)) <= 1 else 0.0,
-                             1.0 if m.has_aoe and aligned else 0.0)
-        i += 5
+                             1.0 if m.has_aoe and aligned else 0.0,
+                             1.0 if m.ranged else 0.0, 1.0 if m.fleeing else 0.0)
+        i += 7
     # Spawn groups: where the next pack probably is (memory of what was already killed)
     for k in range(TARGET_SLOTS):
         if snap.targets is not None and k < len(snap.targets):
@@ -238,6 +245,9 @@ def encode_observation(snap):
     if snap.escape is not None:
         step_x, step_y, cost = snap.escape
         obs[i: i + 3] = (step_x, step_y, 1.0 if cost == float("inf") else min(cost, PATH_NORMALIZER) / PATH_NORMALIZER)
+    i += 3
+    obs[i] = min(1.0, snap.condition_damage / max(1, snap.max_hp))
+    obs[i + 1] = 1.0 if snap.slowed else 0.0
 
     # Local window, out-of-bounds counts as blocked
     r = VIEW_RADIUS

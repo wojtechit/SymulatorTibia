@@ -4,7 +4,7 @@ import json
 import os
 from dataclasses import dataclass, field
 
-from .combat import ELEMENTS, MONSTER_SPELL_TYPES, MonsterSpell
+from .combat import ELEMENTS, MONSTER_SPELL_TYPES, SPELL_EFFECTS, MonsterSpell
 
 DEFAULT_MONSTERS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "monsters.json")
 # Canary import (rl_twin.canary_monsters), merged under the hand-tuned file when the default database is loaded
@@ -28,15 +28,29 @@ class MonsterTemplate:
     sprite: str = None   # TibiaWiki file name override, e.g. "Demon.gif"
     spells: tuple = ()   # MonsterSpell, cast in addition to melee
     loot_value: int = 0  # average gold per kill
+    target_distance: int = 1     # >1: ranged monster, keeps this distance to the player
+    run_health: int = 0          # flees (no melee) while its HP is at or below this
+    heals: tuple = ()            # (min, max, cooldown_ms, chance %) self-heals
+    melee_condition: tuple = None  # (element, total damage, tick interval ms) applied by a landed melee hit
 
     def modifier(self, element):
         return self.resistances.get(element, 100) / 100.0
 
     def describe_pl(self):
         weak = [f"{e} {p}%" for e, p in self.resistances.items() if p != 100]
+        behaviour = []
+        if self.target_distance > 1:
+            behaviour.append(f"dystans {self.target_distance}")
+        if self.run_health:
+            behaviour.append(f"ucieka przy HP ≤ {self.run_health}")
+        if self.heals:
+            behaviour.append("leczy się")
+        if self.melee_condition:
+            behaviour.append(f"melee: {self.melee_condition[0]} DoT")
         return (f"HP {self.hp}, exp {self.exp}, prędkość {self.speed}, pancerz {self.armor}, "
                 f"melee {self.melee_min}-{self.melee_max}"
-                + (f", modyfikatory: {', '.join(weak)}" if weak else ""))
+                + (f", modyfikatory: {', '.join(weak)}" if weak else "")
+                + (f", {', '.join(behaviour)}" if behaviour else ""))
 
 
 class MonsterDatabase:
@@ -112,7 +126,21 @@ class MonsterDatabase:
             sprite=entry.get("sprite"),
             spells=tuple(MonsterDatabase._parse_spell(entry["name"], s) for s in entry.get("spells", [])),
             loot_value=int(entry.get("loot_value", 0)),
+            target_distance=max(1, int(entry.get("target_distance", 1))),
+            run_health=max(0, int(entry.get("run_health", 0))),
+            heals=tuple((int(h["heal"][0]), int(h["heal"][1]), int(h.get("cooldown_ms", 2000)), int(h.get("chance", 100)))
+                        for h in entry.get("heals", [])),
+            melee_condition=MonsterDatabase._parse_condition(entry["name"], entry.get("melee_condition")),
         )
+
+    @staticmethod
+    def _parse_condition(monster, entry):
+        if not entry:
+            return None
+        element = str(entry.get("element", "")).lower()
+        if element not in ELEMENTS or int(entry.get("damage", 0)) <= 0:
+            raise ValueError(f"Monster {monster}: invalid melee_condition {entry}")
+        return element, int(entry["damage"]), int(entry.get("interval_ms", 4000))
 
     @staticmethod
     def _parse_spell(monster, entry):
@@ -133,8 +161,13 @@ class MonsterDatabase:
             spread=int(entry.get("spread", 0)),
             range=int(entry.get("range", 0)),
             radius=int(entry.get("radius", 0)),
+            effect=str(entry.get("effect", "damage")),
+            dot_interval_ms=int(entry.get("dot_interval_ms", 2000)),
+            speed_change=int(entry.get("speed_change", 0)),
+            duration_ms=int(entry.get("duration_ms", 0)),
         )
-        invalid = (low > high or not 0 <= spell.chance <= 100
+        invalid = (low > high or not 0 <= spell.chance <= 100 or spell.effect not in SPELL_EFFECTS
+                   or (spell.effect == "slow" and (spell.speed_change >= 0 or spell.duration_ms <= 0))
                    or (kind in ("beam", "wave") and spell.length < 1)
                    or (kind == "wave" and spell.spread < 1)
                    or (kind == "ball" and (spell.range < 1 or spell.radius < 1)))

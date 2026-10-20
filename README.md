@@ -112,6 +112,38 @@ Nagrody: `lure_bonus` za każdy potwór doprowadzony do walki, `aoe_missed` za p
 
 Skrypty (`rl_twin/scripts.py`, „Eksport/Import skryptu”): `.json` (trasa z typami + strefy) albo `.txt` z liniami `Node (x, y, z)` / `Ladder` / `Hole` we współrzędnych świata (`Świat X/Y pola [0,0]`, ustawiane automatycznie z minimapy klienta). Import przyjmuje każdą linię z trzema liczbami.
 
+## Faza 10: zachowanie potworów z Canary
+
+Importer (`rl_twin.canary_monsters`) czyta z plików Lua Canary, poza statystykami, także
+zachowanie. Środowisko je symuluje:
+
+| Zachowanie | Źródło w Canary | W symulatorze | Ile potworów |
+|---|---|---|---|
+| **Dystans** | `flags.targetDistance` > 1 | potwór dystansowy podchodzi do zadanej odległości z linią wzroku i cofa się, gdy druid się zbliża; strzela (strzały, włócznie, czary) | 166 |
+| **Ucieczka** | `flags.runHealth` | przy HP ≤ progu ucieka (oddala się, nie bije wręcz), dalej rzuca czary; gdy się wyleczy powyżej progu, wraca do walki | 427 |
+| **Leczenie** | `defenses` z COMBAT_HEALING | co `interval` rzut na `chance`, leczy min–max (np. Hydra 260–407 z szansą 25%) | 606 |
+| **Efekt z ataku wręcz** | `condition = {type, totalDamage, interval}` w ataku wręcz | trafienie nakłada obrażenia w czasie (trucizna, podpalenie, zamrożenie); suma rozłożona na 8 ticków | 174 |
+| **Czary DoT** | atak `condition` (chmury trucizny itp.) | obszar jak fala/kula, nakłada obrażenia w czasie zamiast natychmiastowych | 129 czarów |
+| **Spowolnienie / paraliż** | atak `speed` z ujemnym `speedChange` | prędkość druida spada (×2 skala, minimum 40) na `duration` | 161 czarów |
+| **Powrót na spawn** | (zachowanie silnika) | potwór bez celu wraca w promień 2 pól od swojego spawnu | wszystkie |
+
+Silniejszy efekt tego samego żywiołu zastępuje słabszy. Utamo Vita przyjmuje też obrażenia z
+efektów.
+
+W obserwacji (362 cechy) doszło:
+- dla każdego z 4 najbliższych potworów: `ranged` i `fleeing`;
+- dla druida: `condition_damage` (ile obrażeń z efektów jeszcze przyjdzie) i `slowed`.
+
+Reguły nie gonią uciekających potworów: dobijają je SD, jeśli są w zasięgu, a jeśli nie,
+polują dalej. Ręczna baza (9 gatunków) dostała te same pola z Canary; Hydra i Demon dostały też
+brakujące czary obszarowe.
+
+**Jeszcze nie modelowane:**
+- pola na ziemi (fire field, poison field);
+- przyzwania, niewidzialność, zmiana wyglądu, drunk;
+- leczenie efektów przez druida (Exana Pox / Exana Flam);
+- haste druida (Utani Hur / Gran Hur), który w grze zdejmuje paraliż.
+
 ## Faza 9: model uczy się trasy, lure'owania i ucieczek
 
 Wcześniej trasę wyznaczałeś Ty, a lure, pull i ucieczkę robił automat. Teraz, po wyłączeniu
@@ -128,7 +160,7 @@ to, co wiedziałby gracz:
 - które potwory zabił i kiedy wrócą;
 - ile potworów powinno teraz być w każdej grupie.
 
-Do obserwacji (352 cechy) doszło:
+Do obserwacji (dziś 362 cechy) doszło:
 
 | Cechy | Znaczenie |
 |---|---|
@@ -272,9 +304,9 @@ Wartości w `monsters.json` pochodzą z ogólnej wiedzy o Tibii i są **przybli�
 
 ## Format eksportu modelu
 
-`druid_policy.npz`: `W0,b0` (352→128), `W1,b1` (128→128), `W2,b2` (128→21) + `metadata` (JSON: `feature_names`, `action_names`, stałe obserwacji, `env_config`). Inferencja: `argmax(relu(relu(x@W0+b0)@W1+b1)@W2+b2)`. Przy zainstalowanym PyTorch dodatkowo `druid_policy.pt` zgodny z `nn.Sequential(Linear, ReLU, Linear, ReLU, Linear)`.
+`druid_policy.npz`: `W0,b0` (362→128), `W1,b1` (128→128), `W2,b2` (128→21) + `metadata` (JSON: `feature_names`, `action_names`, stałe obserwacji, `env_config`). Inferencja: `argmax(relu(relu(x@W0+b0)@W1+b1)@W2+b2)`. Przy zainstalowanym PyTorch dodatkowo `druid_policy.pt` zgodny z `nn.Sequential(Linear, ReLU, Linear, ReLU, Linear)`.
 
-W `brainstem.py`: wypełnij `GameSnapshot`, przepuść przez `encode_observation()` z `rl_twin/observation.py` (nie przepisuj — kolejność cech musi się zgadzać) i podaj do `BrainstemPolicy.act_name()`. Modele z wcześniejszych faz (119/7, 190/13, 198/14) nie mają obecnego układu (352 cechy, 21 akcji): `load_policy()` / `--resume` przenosi wagi po nazwach cech i akcji (stare zachowanie bez zmian, nowe cechy = 0, nowa akcja = neutralna, epsilon wraca do połowy). Nagroda zmieniła się na ekonomiczną, więc i tak dotrenuj. Mapę zagrożenia w `brainstem.py` licz tą samą funkcją `rl_twin.aoe.danger_window` (pozycje i kierunki potworów + czary z `monsters.json`).
+W `brainstem.py`: wypełnij `GameSnapshot`, przepuść przez `encode_observation()` z `rl_twin/observation.py` (nie przepisuj — kolejność cech musi się zgadzać) i podaj do `BrainstemPolicy.act_name()`. Modele z wcześniejszych faz (119/7, 190/13, 198/14) nie mają obecnego układu (362 cechy, 21 akcji): `load_policy()` / `--resume` przenosi wagi po nazwach cech i akcji (stare zachowanie bez zmian, nowe cechy = 0, nowa akcja = neutralna, epsilon wraca do połowy). Nagroda zmieniła się na ekonomiczną, więc i tak dotrenuj. Mapę zagrożenia w `brainstem.py` licz tą samą funkcją `rl_twin.aoe.danger_window` (pozycje i kierunki potworów + czary z `monsters.json`).
 
 ## Sprite'y (AssetManager)
 

@@ -80,6 +80,7 @@ SPELLBOOK = {
 }
 UTAMO_VITA_DURATION_MS = 200_000
 MONSTER_SPELL_TYPES = ("beam", "wave", "ball")
+SPELL_EFFECTS = ("damage", "dot", "slow")   # direct hit | damage over time (poison, burning...) | speed loss
 
 
 @dataclass(frozen=True)
@@ -96,6 +97,10 @@ class MonsterSpell:
     spread: int = 0           # wave: the cone widens by 2 tiles every `spread` tiles
     range: int = 0            # ball: max distance to the target
     radius: int = 0           # ball: area radius around the target
+    effect: str = "damage"    # SPELL_EFFECTS; "dot": damage_min..max is the total spread over ticks
+    dot_interval_ms: int = 2000
+    speed_change: int = 0     # "slow": added to the player's speed (negative) for duration_ms
+    duration_ms: int = 0
 
     def roll(self, rng):
         return rng.randint(self.damage_min, self.damage_max)
