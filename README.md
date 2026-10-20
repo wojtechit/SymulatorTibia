@@ -112,6 +112,70 @@ Nagrody: `lure_bonus` za każdy potwór doprowadzony do walki, `aoe_missed` za p
 
 Skrypty (`rl_twin/scripts.py`, „Eksport/Import skryptu”): `.json` (trasa z typami + strefy) albo `.txt` z liniami `Node (x, y, z)` / `Ladder` / `Hole` we współrzędnych świata (`Świat X/Y pola [0,0]`, ustawiane automatycznie z minimapy klienta). Import przyjmuje każdą linię z trzema liczbami.
 
+## Faza 9: model uczy się trasy, lure'owania i ucieczek
+
+Wcześniej trasę wyznaczałeś Ty, a lure, pull i ucieczkę robił automat. Teraz, po wyłączeniu
+automatu taktycznego (albo z `--no-tactics` w treningu), decyduje o tym polityka.
+
+**Respawn.** Zabity potwór wraca na swój spawn po `respawn_ms` (domyślnie 60 s; 5. pole spawnu
+nadpisuje czas w sekundach). Jak w Tibii: potwór nie odradza się, gdy druid widzi jego pole.
+Przy włączonym respawnie epizod kończy się śmiercią albo limitem decyzji, nie wybiciem
+wszystkiego.
+
+**Grupy spawnów i pamięć łowiska.** Spawny bliżej niż 6 pól tworzą grupę. Środowisko pamięta
+to, co wiedziałby gracz:
+- które grupy i kiedy odwiedził;
+- które potwory zabił i kiedy wrócą;
+- ile potworów powinno teraz być w każdej grupie.
+
+Do obserwacji (352 cechy) doszło:
+
+| Cechy | Znaczenie |
+|---|---|
+| `m0..m3_*` | 4 najbliższe potwory osobno: kierunek, HP, czy stoi obok, czy grozi falą/beamem z tej pozycji |
+| `t0..t3_*` | 4 najbliższe grupy spawnów (koszt dojścia): kierunek, koszt drogi, ile potworów powinno tam być, czas od ostatniej wizyty |
+| `hp_trend`, `mana_trend`, `damage_rate`, `respawn_soon` | krótka pamięć: zmiana HP/many w 2 s, obrażenia w 5 s, ile zabitych wraca w ciągu 10 s |
+| `escape_*` | pierwszy krok i koszt drogi do najbliższych schodów/dziury |
+
+Pozycja bezwzględna x/y jest domyślnie zerowana (`absolute_position=False`), więc polityka nie
+uczy się na pamięć jednej mapy.
+
+**Makro-akcje (21 akcji):**
+- `goto_target_0..3`: krok w stronę k-tej grupy spawnów;
+- `goto_arena`: krok w stronę najbliższej areny;
+- `escape_stairs`: krok w stronę schodów.
+
+Trasa po łowisku to sekwencja wyborów grup, lure to decyzja, kiedy przestać zbierać i zacząć
+walczyć, a ucieczka to `escape_stairs` w niebezpieczeństwie.
+
+**Nagrody za nowe decyzje** (tylko bez automatu):
+- `aggro_gain`: +1 za każdego nowo zebranego potwora; każdy spawn liczy się raz, więc
+  gubienie i ponowne łapanie aggro nic nie daje;
+- `escape_success`: zmiana piętra, gdy HP < progu ucieczki albo potworów > limitu.
+
+Resztę robi ekonomia: exp za obrażenia, Avalanche na paczkę, koszt zapasów, kara za trafienia
+i śmierć.
+
+**Polowanie bez trasy.** Bez punktów trasy automat (LURE) i reguły idą do grupy z największą
+spodziewaną liczbą potworów na koszt dojścia i trzymają ten cel do skutku. Gdy wszystko jest
+wybite, patrolują grupę odwiedzoną najdawniej, bo stanie przy spawnie blokuje respawn. Po
+ucieczce na inne piętro regenerują się i wracają schodami.
+
+**Nauczyciel.** `python -m rl_twin.trainer scen.json --no-tactics --teacher rules`, w GUI pole
+„Nauczyciel (reguły)”. Na początku treningu część decyzji (malejąco do 0) podejmują reguły,
+a DQN uczy się z tych przejść off-policy.
+
+**Potwory z Canary.** `rl_twin/data/monsters_canary.json` zawiera 1592 potwory z plików Lua
+Canary. Generuje go `python -m rl_twin.canary_monsters <canary>/data-otservbr-global/monster`.
+- Prędkość ×2 (nowa skala Canary → stara).
+- Odporności: 100 − percent.
+- Ataki: fala, beam, kula, strzał.
+- Loot to tylko spodziewane monety, czyli dolna granica zysku.
+
+Domyślna baza = ręcznie dopracowane `monsters.json` (pierwszeństwo) + import. Łowiska mają
+teraz wszystkie potwory ze spawnów, nie tylko 9 gatunków. Lista potworów w edytorze ma
+wyszukiwanie.
+
 ## Faza 8: edytor all-in-one, mapa świata i natywne spawny
 
 **Łowiska z listy.** Wybierasz łowisko z listy i klikasz **Wczytaj**. Symulator pobiera
@@ -164,8 +228,7 @@ Tylko plik, który w ogóle nie jest projektem, daje błąd. Uszkodzony OTBM, it
 XML spawnów kończy się czytelnym komunikatem, a obecna mapa zostaje bez zmian.
 
 Trening bez okna działa bez zmian na zapisanym projekcie:
-`python -m rl_twin.trainer projekt.json --episodes 3000`. Obserwacja (305 cech) i akcje (15)
-są takie same jak wcześniej, więc wytrenowane modele i `brainstem.py` działają dalej.
+`python -m rl_twin.trainer projekt.json --episodes 3000`. Wytrenowane modele przenoszą się po nazwach cech i akcji (`--resume`).
 
 ## Prawdziwe kolizje (tibiamaps) i walka na regułach
 
@@ -209,9 +272,9 @@ Wartości w `monsters.json` pochodzą z ogólnej wiedzy o Tibii i są **przybli�
 
 ## Format eksportu modelu
 
-`druid_policy.npz`: `W0,b0` (305→128), `W1,b1` (128→128), `W2,b2` (128→15) + `metadata` (JSON: `feature_names`, `action_names`, stałe obserwacji, `env_config`). Inferencja: `argmax(relu(relu(x@W0+b0)@W1+b1)@W2+b2)`. Przy zainstalowanym PyTorch dodatkowo `druid_policy.pt` zgodny z `nn.Sequential(Linear, ReLU, Linear, ReLU, Linear)`.
+`druid_policy.npz`: `W0,b0` (352→128), `W1,b1` (128→128), `W2,b2` (128→21) + `metadata` (JSON: `feature_names`, `action_names`, stałe obserwacji, `env_config`). Inferencja: `argmax(relu(relu(x@W0+b0)@W1+b1)@W2+b2)`. Przy zainstalowanym PyTorch dodatkowo `druid_policy.pt` zgodny z `nn.Sequential(Linear, ReLU, Linear, ReLU, Linear)`.
 
-W `brainstem.py`: wypełnij `GameSnapshot`, przepuść przez `encode_observation()` z `rl_twin/observation.py` (nie przepisuj — kolejność cech musi się zgadzać) i podaj do `BrainstemPolicy.act_name()`. Modele z wcześniejszych faz (119/7, 190/13, 198/14) nie mają obecnego układu (305 cech, 15 akcji): `load_policy()` / `--resume` przenosi wagi po nazwach cech i akcji (stare zachowanie bez zmian, nowe cechy = 0, nowa akcja = neutralna, epsilon wraca do połowy). Nagroda zmieniła się na ekonomiczną, więc i tak dotrenuj. Mapę zagrożenia w `brainstem.py` licz tą samą funkcją `rl_twin.aoe.danger_window` (pozycje i kierunki potworów + czary z `monsters.json`).
+W `brainstem.py`: wypełnij `GameSnapshot`, przepuść przez `encode_observation()` z `rl_twin/observation.py` (nie przepisuj — kolejność cech musi się zgadzać) i podaj do `BrainstemPolicy.act_name()`. Modele z wcześniejszych faz (119/7, 190/13, 198/14) nie mają obecnego układu (352 cechy, 21 akcji): `load_policy()` / `--resume` przenosi wagi po nazwach cech i akcji (stare zachowanie bez zmian, nowe cechy = 0, nowa akcja = neutralna, epsilon wraca do połowy). Nagroda zmieniła się na ekonomiczną, więc i tak dotrenuj. Mapę zagrożenia w `brainstem.py` licz tą samą funkcją `rl_twin.aoe.danger_window` (pozycje i kierunki potworów + czary z `monsters.json`).
 
 ## Sprite'y (AssetManager)
 

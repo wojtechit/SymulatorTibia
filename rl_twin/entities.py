@@ -190,9 +190,14 @@ class Druid(Entity):
 
 
 class Monster(Entity):
-    def __init__(self, template, x, y, z=GROUND_FLOOR):
+    def __init__(self, template, x, y, z=GROUND_FLOOR, respawn_ms=60_000):
         super().__init__(template.name, x, y, z, template.hp, template.speed)
         self.template = template
+        self.home = (int(x), int(y), int(z))       # spawn tile it returns to after respawn_ms
+        self.respawn_ms = int(respawn_ms)
+        self.died_at = None
+        self.known_dead_at = None                  # what the player knows: when it was seen dead
+        self.lured = False                         # already counted as pulled (learned-lure reward)
         self.armor = template.armor
         self.resistances = template.resistances
         self.experience = template.exp
@@ -203,6 +208,18 @@ class Monster(Entity):
         self.facing = (0, 1)                       # cardinal (dx, dy); spawns facing south
         self.next_spell_ms = [0] * len(template.spells)
         self.directional_spells = tuple(s for s in template.spells if s.type in ("beam", "wave"))
+
+    def revive(self):
+        """Fresh monster on its spawn tile (respawn)."""
+        self.hp = self.max_hp
+        self.move_to(*self.home)
+        self.aggro = False
+        self.facing = (0, 1)
+        self.died_at = None
+        self.lured = False
+        self.next_attack_ms = 0
+        self.next_move_ms = 0
+        self.next_spell_ms = [0] * len(self.template.spells)
 
     def roll_melee(self, rng):
         return rng.randint(self.template.melee_min, self.template.melee_max)

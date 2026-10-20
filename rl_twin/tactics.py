@@ -172,7 +172,7 @@ class TacticalController:
             return survival, True
         druid = env.druid
         if self.state == LURE:
-            step = env.waypoint_step()
+            step = env.waypoint_step() if env.waypoints else env.hunt_step()
         elif self.state == PULL:
             arena = self.nearest_zone("arena", druid.x, druid.y, druid.z)
             straggler = max((chebyshev(m.x, m.y, druid.x, druid.y) for m in env.aggressive_monsters()), default=0)

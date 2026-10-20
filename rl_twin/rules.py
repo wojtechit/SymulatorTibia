@@ -8,7 +8,9 @@ Priorities each decision (like a careful druid on a cavebot):
   4. Exori Frigo / Tera on the target, element picked by its resistances
   5. Sudden Death on a target that is not almost dead (SD overkill wastes gold)
   6. step off melee range while spells are on cooldown (kiting), else close in to spell range
-  7. follow the waypoint route when nothing is aggressive
+  7. follow the waypoint route when nothing is aggressive; without a route walk to the spawn group
+     with the most expected monsters (memory of what was killed and when it respawns)
+  0. without the tactics automat: run for the stairs below escape_hp or above safe_max monsters
 """
 
 from dataclasses import dataclass
@@ -16,10 +18,11 @@ from dataclasses import dataclass
 from .aoe import danger_window
 from .combat import SPELLBOOK
 from .env import (ACTION_EXORI_FRIGO, ACTION_EXORI_TERA, ACTION_USE_AVALANCHE,
-                  ACTION_USE_SD, ACTION_WAIT, AVALANCHE, MOVE_DELTAS, STRIKE_RANGE, RUNE_RANGE)
+                  ACTION_ESCAPE, ACTION_USE_SD, ACTION_WAIT, AVALANCHE, MOVE_DELTAS, STRIKE_RANGE, RUNE_RANGE)
 from .physics import chebyshev, in_view
 
 DANGER_RADIUS = 2
+ESCAPE_COOLDOWN_MS = 5_000
 
 
 @dataclass
@@ -46,8 +49,8 @@ def _best_tile(env, druid, danger, monsters, want_distance):
     best = None
     for action, (dx, dy) in MOVE_DELTAS.items():
         nx, ny = druid.x + dx, druid.y + dy
-        if env._movement_blocker(nx, ny, druid.z) is not None:
-            continue
+        if env._movement_blocker(nx, ny, druid.z) is not None or (nx, ny, druid.z) in env.transitions:
+            continue                                   # stairs would change floor mid-fight
         threat = float(danger[dy + DANGER_RADIUS, dx + DANGER_RADIUS]) if danger is not None else 0.0
         nearest = min((chebyshev(nx, ny, m.x, m.y) for m in monsters), default=want_distance)
         adjacent = sum(1 for m in monsters if chebyshev(nx, ny, m.x, m.y) <= 1)
@@ -66,8 +69,18 @@ def rule_action(env, config=None):
         return survival
 
     aggro = env.aggressive_monsters()
+    if not env.tactics.config.enabled:
+        # No automat: the rules also decide when to run for the stairs (same thresholds as the automat)
+        tactics = env.tactics.config
+        settled = env.floor_changed_ms is None or now - env.floor_changed_ms >= ESCAPE_COOLDOWN_MS
+        if (aggro and settled and (druid.hp_ratio < tactics.escape_hp or len(aggro) > tactics.safe_max)
+                and env.escape_routes(druid.z)):
+            return ACTION_ESCAPE                       # not right after arriving: no stair ping-pong
+        if not aggro and druid.hp_ratio < tactics.recover_hp:
+            recover = env.survival_action(1.0, 1.0)            # regenerate before the next pull
+            return ACTION_WAIT if recover is None else recover
     if not aggro:
-        return env.move_action(env.waypoint_step())
+        return env.move_action(env.waypoint_step() if env.waypoints else env.hunt_step())
 
     danger = _danger(env, druid)
     if danger is not None and danger[DANGER_RADIUS, DANGER_RADIUS] > 0:

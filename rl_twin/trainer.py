@@ -12,9 +12,14 @@ from .agent import DQNAgent
 from .env import DruidHuntEnv, EnvConfig
 
 
-def run_training(env, agent, episodes, on_progress=None, should_stop=None, progress_every=1.0):
+def run_training(env, agent, episodes, on_progress=None, should_stop=None, progress_every=1.0,
+                 teacher=None, teacher_fraction=0.3):
     """
     Train `agent` on `env` for `episodes` episodes.
+
+    teacher(env) -> action: demonstrations (e.g. rules.rule_action). The chance of taking the teacher's
+    action instead of the agent's falls linearly from 1 to 0 over the first `teacher_fraction` of episodes;
+    DQN learns off-policy, so these transitions seed the replay buffer with sensible hunting.
 
     on_progress(stats: dict) is called at most every `progress_every` seconds and
     after the last episode; should_stop() is polled every episode.
@@ -36,8 +41,9 @@ def run_training(env, agent, episodes, on_progress=None, should_stop=None, progr
         obs, _ = env.reset()
         done = False
         info = {}
+        guide = 0.0 if teacher is None else max(0.0, 1.0 - (episode - 1) / max(1.0, teacher_fraction * episodes))
         while not done:
-            action = agent.act(obs)
+            action = teacher(env) if guide and agent.rng.random() < guide else agent.act(obs)
             next_obs, reward, terminated, truncated, info = env.step(action)
             # Learn from the action actually executed: controller-driven steps (lure, escape) act as demonstrations
             executed = info.get("action")
@@ -69,6 +75,7 @@ def run_training(env, agent, episodes, on_progress=None, should_stop=None, progr
             "total_steps": agent.total_steps,
             "steps_per_second": (agent.total_steps - start_steps) / max(elapsed, 1e-6),
             "elapsed": elapsed,
+            "teacher": guide,
             "new_rewards": episode_rewards,
         }
         if on_progress is not None and (now - last_report >= progress_every or episode == episodes):
@@ -88,6 +95,10 @@ def main():
     parser.add_argument("--out", default="druid_policy", help="ścieżka eksportu (bez rozszerzenia)")
     parser.add_argument("--resume", help="kontynuuj trening z pliku .npz")
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--teacher", choices=["rules"], help="demonstracje na początku treningu (walka na regułach)")
+    parser.add_argument("--teacher-fraction", type=float, default=0.3, help="część epizodów z nauczycielem")
+    parser.add_argument("--no-tactics", action="store_true",
+                        help="wyłącz automat taktyczny: polityka sama wybiera trasę, lure i ucieczki")
     args = parser.parse_args()
 
     if args.scenario:
@@ -96,6 +107,8 @@ def main():
     else:
         config = EnvConfig()
     config.seed = args.seed
+    if args.no_tactics:
+        config.tactics.enabled = False
     env = DruidHuntEnv(config)
     agent = DQNAgent(seed=args.seed)
     if args.resume:
@@ -113,7 +126,12 @@ def main():
               f"zgony {stats['death_rate'] * 100:5.1f}% | eps {stats['epsilon']:.3f} | "
               f"{stats['steps_per_second']:.0f} kroków/s")
 
-    run_training(env, agent, args.episodes, on_progress=report, progress_every=5.0)
+    teacher = None
+    if args.teacher == "rules":
+        from .rules import rule_action
+        teacher = rule_action
+    run_training(env, agent, args.episodes, on_progress=report, progress_every=5.0,
+                 teacher=teacher, teacher_fraction=args.teacher_fraction)
     paths = agent.export_policy(args.out, {"env_config": config.to_dict()})
     print("Zapisano model: " + ", ".join(paths))
 

@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QComboBox,
+    QCompleter,
     QDialog,
     QDialogButtonBox,
     QDockWidget,
@@ -862,7 +863,7 @@ class GridCanvas(QGraphicsView):
         self.transitions = [list(t) for t in config.transitions]
         self.zones = [dict(zone) for zone in config.zones]
         self.waypoints = [tuple(int(v) for v in w[:3]) for w in config.waypoints]
-        self.spawns = {(int(x), int(y), int(z)): name for x, y, z, name in config.spawns}
+        self.spawns = {(int(x), int(y), int(z)): name for x, y, z, name, *_ in config.spawns}
         self.refresh()
 
     # ----- live entities --------------------------------------------------- #
@@ -1111,11 +1112,12 @@ class TrainingWorker(QThread):
     progress = pyqtSignal(dict)
     failed = pyqtSignal(str)
 
-    def __init__(self, config, agent, episodes, parent=None):
+    def __init__(self, config, agent, episodes, parent=None, teacher_fraction=0.0):
         super().__init__(parent)
         self.config = config
         self.agent = agent
         self.episodes = episodes
+        self.teacher_fraction = teacher_fraction
         self._stop_requested = False
 
     def stop(self):
@@ -1127,7 +1129,9 @@ class TrainingWorker(QThread):
             run_training(env, self.agent, self.episodes,
                          on_progress=self.progress.emit,
                          should_stop=lambda: self._stop_requested,
-                         progress_every=0.25)
+                         progress_every=0.25,
+                         teacher=rule_action if self.teacher_fraction > 0 else None,
+                         teacher_fraction=self.teacher_fraction)
         except Exception as exc:  # surfaced in the GUI log instead of dying silently
             self.failed.emit(f"{type(exc).__name__}: {exc}")
 
@@ -1702,6 +1706,10 @@ class MainWindow(QMainWindow):
         self.monster_combo = QComboBox()
         self.monster_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.monster_combo.setMinimumContentsLength(12)
+        self.monster_combo.setEditable(True)                    # 1500+ monsters: type to search
+        self.monster_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.monster_combo.completer().setFilterMode(Qt.MatchContains)
+        self.monster_combo.completer().setCompletionMode(QCompleter.PopupCompletion)
         self.monster_combo.currentIndexChanged.connect(
             lambda *_: setattr(self.canvas, "monster_type", self.monster_combo.currentData()))
         self.random_monsters_input = self._spin(0, 50, 3)
@@ -1772,7 +1780,15 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(group)
         self.tactics_checkbox = QCheckBox("Automat taktyczny: lure → arena → walka (RL), ucieczka po schodach")
         self.tactics_checkbox.setChecked(True)
+        self.tactics_checkbox.setToolTip("Wyłączony = polityka decyduje o wszystkim: wybór grupy spawnów (trasa), "
+                                         "ile mobów zebrać, kiedy iść na arenę i kiedy uciekać schodami.")
         layout.addWidget(self.tactics_checkbox)
+        mode_hint = QLabel("Wyłącz automat, żeby model sam uczył się trasy po grupach spawnów, lure'owania i "
+                           "ucieczek (akcje: idź do grupy 1-4, na arenę, ucieczka schodami). Bez punktów trasy "
+                           "druid poluje po pamięci: idzie tam, gdzie potwory się odrodziły.")
+        mode_hint.setObjectName("hint")
+        mode_hint.setWordWrap(True)
+        layout.addWidget(mode_hint)
         grid = QGridLayout()
         self.lure_min_input = self._spin(1, 20, 3)
         self.lure_max_input = self._spin(1, 30, 4)
@@ -1783,6 +1799,11 @@ class MainWindow(QMainWindow):
         self.recover_hp_input.setSuffix(" %")
         self.recover_s_input = self._spin(0, 600, 30)
         self.recover_s_input.setSuffix(" s")
+        self.respawn_input = self._spin(0, 900, 60)
+        self.respawn_input.setSuffix(" s")
+        self.respawn_input.setSpecialValueText("wyłączony")
+        self.respawn_input.setToolTip("Czas odrodzenia potwora na spawnie (Tibia: zwykle 60-90 s). Potwór nie odradza "
+                                      "się, gdy druid widzi jego pole. 0 = bez respawnu (epizod kończy wybicie wszystkich).")
         self.origin_x_input = self._spin(0, 65_535, 0)
         self.origin_y_input = self._spin(0, 65_535, 0)
         self.origin_x_input.valueChanged.connect(lambda *_: self._on_scenario_changed())
@@ -1794,7 +1815,8 @@ class MainWindow(QMainWindow):
         fields = [("Lure min potw.:", self.lure_min_input), ("Lure max potw.:", self.lure_max_input),
                   ("Ucieczka przy HP <", self.escape_hp_input), ("…albo potworów >", self.safe_max_input),
                   ("Powrót przy HP ≥", self.recover_hp_input), ("Min. czas na górze:", self.recover_s_input),
-                  ("Świat X pola [0,0]:", self.origin_x_input), ("Świat Y pola [0,0]:", self.origin_y_input)]
+                  ("Świat X pola [0,0]:", self.origin_x_input), ("Świat Y pola [0,0]:", self.origin_y_input),
+                  ("Respawn potworów:", self.respawn_input)]
         for i, (text, widget) in enumerate(fields):
             row, col = divmod(i, 2)
             grid.addWidget(QLabel(text), row, col * 2)
@@ -1940,7 +1962,7 @@ class MainWindow(QMainWindow):
             ("loot", "Loot / zapasy:"), ("profit", "Bilans (gp):"),
             ("hp_min", "HP min:"), ("adjacent", "Obok potwora:"),
             ("pots_h", "Mikstury/h:"), ("runes_h", "Runy/h:"),
-            ("state", "Stan taktyczny:"), ("tactics", "Ucieczki / pulle / paczka:"),
+            ("state", "Stan taktyczny:"), ("tactics", "Ucieczki / pulle / paczka / respawny:"),
             ("waste", "Marnotrawstwo:"), ("safety", "Bezpieczeństwo:"),
         ])
         return page
@@ -1952,6 +1974,12 @@ class MainWindow(QMainWindow):
         form = QFormLayout()
         self.episodes_input = self._spin(1, 1_000_000, 2000)
         form.addRow("Liczba epizodów:", self.episodes_input)
+        self.teacher_input = self._spin(0, 100, 30)
+        self.teacher_input.setSuffix(" % epizodów")
+        self.teacher_input.setSpecialValueText("bez nauczyciela")
+        self.teacher_input.setToolTip("Na początku treningu część decyzji podejmuje walka na regułach (malejąco do 0). "
+                                      "Model uczy się z tych przykładów - szybciej łapie polowanie po grupach spawnów.")
+        form.addRow("Nauczyciel (reguły):", self.teacher_input)
         layout.addLayout(form)
 
         row = QHBoxLayout()
@@ -2081,12 +2109,16 @@ class MainWindow(QMainWindow):
         current = self.monster_combo.currentData()
         self.monster_combo.blockSignals(True)
         self.monster_combo.clear()
-        for name in self.monster_db.names():
+        featured = [n for n in getattr(self.monster_db, "featured", []) if n in self.monster_db]
+        others = sorted(n for n in self.monster_db.names() if n not in set(featured))
+        for name in featured + others:
             icon = self.sprite_store.pixmap(name, 24)
             self.monster_combo.addItem(QIcon(icon) if icon else QIcon(), name, name)
             self.monster_combo.setItemData(self.monster_combo.count() - 1,
                                            self.monster_db.get(name).describe_pl(), Qt.ToolTipRole)
-        index = self.monster_combo.findData(current)
+            if featured and name == featured[-1] and others:
+                self.monster_combo.insertSeparator(self.monster_combo.count())
+        index = self.monster_combo.findData(current) if current else -1     # findData(None) hits the separator
         if index < 0:
             index = max(0, self.monster_combo.findData("Giant Spider"))
         self.monster_combo.setCurrentIndex(index)
@@ -2173,6 +2205,8 @@ class MainWindow(QMainWindow):
             zones=[dict(zone) for zone in canvas.zones],
             tactics=self._tactics_config(),
             world_origin=[self.origin_x_input.value(), self.origin_y_input.value()],
+            respawn=self.respawn_input.value() > 0,
+            respawn_ms=max(1, self.respawn_input.value()) * 1000,
         )
 
     # ----- manual / visual mode -------------------------------------------- #
@@ -2303,7 +2337,8 @@ class MainWindow(QMainWindow):
         v["runes_h"].setText(str(info["runes_per_hour"]))
         state = info.get("tactical_state")
         v["state"].setText(STATE_LABELS_PL.get(state, "wyłączony") if state else "wyłączony")
-        v["tactics"].setText(f"{info['escapes']} / {info['pulls']} / {info['avg_pack']:.1f}")
+        v["tactics"].setText(f"{info['escapes'] + info['learned_escapes']} / {info['pulls']} / "
+                             f"{info['avg_pack']:.1f} / {info['respawns']}")
         v["waste"].setText(f"{info['waste_pct']:.1f}% zapasów")
         v["safety"].setText(f"{info['safety']:.0f}/100")
 
@@ -2327,14 +2362,18 @@ class MainWindow(QMainWindow):
         self.reward_plot.clear()
         self.train_progress.setRange(0, episodes)
         self.train_progress.setValue(0)
-        self.worker = TrainingWorker(config, self.agent, episodes, self)
+        self.worker = TrainingWorker(config, self.agent, episodes, self,
+                                     teacher_fraction=self.teacher_input.value() / 100.0)
         self.worker.progress.connect(self._on_training_progress)
         self.worker.failed.connect(lambda msg: self.log("death", f"Błąd treningu: {msg}"))
         self.worker.finished.connect(self._on_training_finished)
         blocked = sum(row.count("1") for rows in config.collision.values() for row in rows)
         self.log("train", f"Start treningu: {episodes} epizodów, siatka {config.cols}x{config.rows}, "
                           f"zablokowane pola {blocked}, spawny {len(config.spawns) or 'losowe'}, "
-                          f"ukos x{config.diagonal_multiplier:.2f}.")
+                          f"ukos x{config.diagonal_multiplier:.2f}, "
+                          + ("automat taktyczny" if config.tactics.enabled else
+                             "bez automatu (model sam wybiera trasę, lure i ucieczki)")
+                          + (f", nauczyciel {self.teacher_input.value()}% epizodów." if self.teacher_input.value() else "."))
         self.worker.start()
         self._refresh_controls()
 
@@ -2629,6 +2668,7 @@ class MainWindow(QMainWindow):
         self.origin_x_input.setValue(int(config.world_origin[0]))
         self.origin_y_input.setValue(int(config.world_origin[1]))
         self.random_monsters_input.setValue(config.random_monster_count)
+        self.respawn_input.setValue(config.respawn_ms // 1000 if config.respawn else 0)
         self.diagonal_input.setValue(config.diagonal_multiplier)
         self.ground_speed_input.setValue(config.ground_speed)
         index = self.monster_combo.findData(config.random_monster_type)
@@ -2798,6 +2838,7 @@ class MainWindow(QMainWindow):
                                f"{ground.cols}x{ground.rows} pól. Spawny: " + "; ".join(
                                    f"z{z}: " + ", ".join(f"{n} x{k}" for n, k in sorted(names.items()))
                                    for z, names in sorted(per_floor.items())))
+            self.sync_sprites()
             self._report_spawn_problems(data.unknown, data.blocked)
             for warning in data.warnings:
                 self.log("warn", warning)
@@ -2838,6 +2879,7 @@ class MainWindow(QMainWindow):
             c.refresh()
             self.log("system", f"Spawny z {os.path.basename(source)}: {total} w bazie, na tym wycinku "
                                f"postawiono {len(placed)} (piętra {sorted({p[2] for p in placed})}).")
+            self.sync_sprites()
             self._report_spawn_problems(unknown, blocked)
             if not placed:
                 self.log("warn", "Na tym wycinku nie ma żadnych znanych potworów z bazy.")
@@ -2937,6 +2979,7 @@ class MainWindow(QMainWindow):
             c.set_floor(params["home"] if params["home"] in terrain.layers else min(terrain.layers))
             c.refresh()
             c.fit_map()
+            self.sync_sprites()
             self.log("system", f"OTBM: postawiono {len(placed)} spawnów.")
             self._report_spawn_problems(unknown, blocked)
             if note:
@@ -2966,7 +3009,9 @@ class MainWindow(QMainWindow):
         if self.asset_worker is not None and self.asset_worker.isRunning():
             self._sprite_resync = True
             return
-        entries = sprite_entries(self.monster_db)
+        # Hand-tuned monsters + whatever stands on the map (the Canary import has 1500+ names)
+        wanted = set(getattr(self.monster_db, "featured", [])) | set(self.canvas.spawns.values())
+        entries = [e for e in sprite_entries(self.monster_db) if e[0] == "Druid" or e[0] in wanted]
         if force:
             entries = [e for e in entries if not self.asset_manager.local_path(e[0])]
         if not entries or (not force and all(self.asset_manager.local_path(name) for name, _ in entries)):

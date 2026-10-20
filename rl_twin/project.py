@@ -33,7 +33,7 @@ def script_block(config):
     """rl_twin.script structure (world coordinates) for the config's route, zones and spawns."""
     ox, oy = config.world_origin
     script = json_script([tuple(w) for w in config.waypoints], config.zones, config.transitions, (ox, oy))
-    script["spawns"] = [{"name": name, "x": x + ox, "y": y + oy, "z": z} for x, y, z, name in config.spawns]
+    script["spawns"] = [{"name": name, "x": x + ox, "y": y + oy, "z": z} for x, y, z, name, *_ in config.spawns]
     return script
 
 
@@ -131,12 +131,13 @@ def sanitize(data, monster_names, warnings):
     data["waypoints"] = keep(data.get("waypoints"),
                              lambda w: len(w) in (2, 3) and inside(int(w[0]), int(w[1])), "punktów trasy")
     known = set(monster_names) if monster_names else None
-    spawns = keep(data.get("spawns"), lambda s: len(s) in (3, 4) and inside(int(s[0]), int(s[1])), "spawnów")
+    spawns = keep(data.get("spawns"), lambda s: len(s) in (3, 4, 5) and inside(int(s[0]), int(s[1])), "spawnów")
     if known is not None:
-        unknown = sorted({s[-1] for s in spawns if s[-1] not in known})
+        name_of = lambda s: s[3] if len(s) > 3 else s[2]
+        unknown = sorted({name_of(s) for s in spawns if name_of(s) not in known})
         if unknown:
             warnings.append(f"Nieznane potwory pominięte (brak w bazie): {', '.join(unknown)}")
-            spawns = [s for s in spawns if s[-1] in known]
+            spawns = [s for s in spawns if name_of(s) in known]
     data["spawns"] = spawns
     data["transitions"] = keep(data.get("transitions"),
                                lambda t: len(t) == 6 and inside(int(t[0]), int(t[1])) and inside(int(t[3]), int(t[4])),

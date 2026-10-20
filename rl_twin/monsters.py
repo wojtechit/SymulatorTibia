@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from .combat import ELEMENTS, MONSTER_SPELL_TYPES, MonsterSpell
 
 DEFAULT_MONSTERS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "monsters.json")
+# Canary import (rl_twin.canary_monsters), merged under the hand-tuned file when the default database is loaded
+EXTENSION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "monsters_canary.json")
 REQUIRED_FIELDS = ("name", "hp", "exp", "speed", "armor", "elemental_resistances")
 
 _cache = {}
@@ -38,13 +40,30 @@ class MonsterTemplate:
 
 
 class MonsterDatabase:
-    def __init__(self, templates, source=None):
+    def __init__(self, templates, source=None, featured=None):
         self.source = source
         self._templates = {t.name: t for t in templates}
+        self.featured = list(featured) if featured is not None else list(self._templates)   # hand-tuned, listed first
 
     @classmethod
     def load(cls, path=None):
-        """Load (and cache) a monsters JSON file."""
+        """
+        Load (and cache) a monsters JSON file. Without a path: the hand-tuned default file plus the
+        Canary extension (if present) for every other monster; hand-tuned entries win.
+        """
+        if path is None and os.path.isfile(EXTENSION_FILE):
+            key = (DEFAULT_MONSTERS_FILE, EXTENSION_FILE)
+            stamp = (os.path.getmtime(DEFAULT_MONSTERS_FILE), os.path.getmtime(EXTENSION_FILE))
+            cached = _cache.get(key)
+            if cached and cached[0] == stamp:
+                return cached[1]
+            base = cls.load(DEFAULT_MONSTERS_FILE)
+            extension = cls.load(EXTENSION_FILE)
+            templates = [base.get(n) for n in base.names()]
+            templates += [extension.get(n) for n in extension.names() if n not in base]
+            database = cls(templates, source=DEFAULT_MONSTERS_FILE, featured=base.names())
+            _cache[key] = (stamp, database)
+            return database
         path = os.path.abspath(path or DEFAULT_MONSTERS_FILE)
         mtime = os.path.getmtime(path)
         cached = _cache.get(path)
@@ -60,8 +79,9 @@ class MonsterDatabase:
     def from_dict(cls, data, source=None):
         entries = data["monsters"] if isinstance(data, dict) else data
         templates = [cls._parse_entry(entry, i) for i, entry in enumerate(entries)]
-        names = [t.name for t in templates]
-        duplicates = {n for n in names if names.count(n) > 1}
+        seen, duplicates = set(), set()
+        for template in templates:
+            (duplicates if template.name in seen else seen).add(template.name)
         if duplicates:
             raise ValueError(f"Duplicate monster names: {sorted(duplicates)}")
         return cls(templates, source)

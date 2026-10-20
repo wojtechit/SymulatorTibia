@@ -13,6 +13,7 @@ monsters move on their own step timers and attack every attack_interval_ms.
 
 import json
 import random
+from collections import deque
 from dataclasses import asdict, dataclass, field
 
 import numpy as np
@@ -27,7 +28,8 @@ from .rewards import Economy, RewardConfig
 from .tactics import (ESCAPE, FIGHT, PULL, RECOVER, STATE_LABELS_PL, TacticalController, TacticsConfig,
                       orbit_tangent, zone_contains)
 from .terrain import decode_speed
-from .observation import ACTION_NAMES, OBS_SIZE, VIEW_RADIUS, GameSnapshot, MonsterView, encode_observation
+from .observation import (ACTION_NAMES, OBS_SIZE, TARGET_SLOTS, VIEW_RADIUS, GameSnapshot, MonsterView,
+                          encode_observation)
 from .physics import (
     DEFAULT_DIAGONAL_MULTIPLIER,
     DEFAULT_GROUND_SPEED,
@@ -50,6 +52,13 @@ ACTION_UP_LEFT, ACTION_UP_RIGHT, ACTION_DOWN_LEFT, ACTION_DOWN_RIGHT = 4, 5, 6, 
 ACTION_EXORI_FRIGO, ACTION_EXORI_TERA, ACTION_HEAL, ACTION_MANA_POTION, ACTION_WAIT = 8, 9, 10, 11, 12
 ACTION_USE_SD = 13
 ACTION_USE_AVALANCHE = 14
+ACTION_GOTO_TARGETS = tuple(range(15, 15 + TARGET_SLOTS))      # walk toward the k-th nearest spawn group
+ACTION_GOTO_ARENA = 15 + TARGET_SLOTS
+ACTION_ESCAPE = ACTION_GOTO_ARENA + 1                           # walk toward the nearest stairs / hole
+CLUSTER_RADIUS = 6         # spawns closer than this (Chebyshev) form one spawn group
+HISTORY_MS = 2_000         # hp / mana trend window
+DAMAGE_WINDOW_MS = 5_000   # damage_rate window
+RESPAWN_SOON_MS = 10_000   # respawn_soon counts known kills that come back within this time
 MOVE_DELTAS = {
     ACTION_UP: (0, -1), ACTION_DOWN: (0, 1), ACTION_LEFT: (-1, 0), ACTION_RIGHT: (1, 0),
     ACTION_UP_LEFT: (-1, -1), ACTION_UP_RIGHT: (1, -1),
@@ -113,6 +122,9 @@ class EnvConfig:
     floor: int = GROUND_FLOOR                       # used when there are no waypoints
     random_monster_count: int = 3                   # used when spawns is empty
     random_monster_type: str = "Giant Spider"
+    respawn: bool = True                            # killed monsters come back at their spawn (Tibia spawntime)
+    respawn_ms: int = 60_000                        # default spawntime; a 5th spawn field [.., seconds] overrides
+    absolute_position: bool = False                 # True: observe absolute x/y (ties a policy to one map)
     max_steps: int = 600
     ground_speed: int = DEFAULT_GROUND_SPEED
     diagonal_multiplier: float = DEFAULT_DIAGONAL_MULTIPLIER
@@ -214,6 +226,12 @@ class DruidHuntEnv:
         self.adjacent_ms = 0
         self.heals = 0
         self.episode_reward = 0.0
+        self.clusters = []           # spawn groups: {"x", "y", "z", "members", "visited_ms"}
+        self._hunt_target = None
+        self.floor_changed_ms = None
+        self.respawns = 0
+        self.escapes_learned = 0
+        self._history = deque()      # (time_ms, hp, mana, damage_taken) for the memory features
 
     # ----- Gym API --------------------------------------------------------- #
 
@@ -231,6 +249,12 @@ class DruidHuntEnv:
             self._event("warn", f"Taktyka: brak schodów/dziur na piętrze {self.druid.z} - awaryjna ucieczka niemożliwa "
                                 f"(wczytaj sąsiednie piętro, żeby połączyć przejścia).")
         self.monsters = self._create_monsters()
+        self.clusters = self._build_clusters()
+        self._hunt_target = None
+        self.floor_changed_ms = None
+        self.respawns = 0
+        self.escapes_learned = 0
+        self._history = deque()
         self.time_ms = 0
         self.steps = 0
         self.waypoint_index = 1 if len(self.waypoints) > 1 else 0
@@ -255,6 +279,10 @@ class DruidHuntEnv:
         if not self.action_space.contains(action):
             raise ValueError(f"Invalid action: {action}")
         self.events = []
+        aggro_before = len(self.aggressive_monsters())
+        z_before = self.druid.z
+        tactics = self.config.tactics
+        danger_before = self.druid.hp_ratio < tactics.escape_hp or aggro_before > tactics.safe_max
         reward = self._tactical_update()
         action, controlled = self.tactics.choose_action(self, int(action))
         self.last_action, self.last_controlled = action, controlled
@@ -263,6 +291,7 @@ class DruidHuntEnv:
         reward += step_reward
         reward += self._simulate_world(elapsed)
         reward += self.config.rewards.step * elapsed / TIME_UNIT_MS
+        reward += self._after_step(z_before, danger_before)
 
         druid = self.druid
         terminated = False
@@ -270,7 +299,7 @@ class DruidHuntEnv:
             reward += self.config.rewards.death
             terminated = True
             self._event("death", "DRUID ZGINĄŁ! Koniec epizodu.")
-        elif not any(m.alive for m in self.monsters):
+        elif not self.config.respawn and not any(m.alive for m in self.monsters):
             terminated = True
             self._event("system", "Wszystkie potwory pokonane - epizod zakończony sukcesem.")
         self.steps += 1
@@ -300,6 +329,12 @@ class DruidHuntEnv:
             duration = self._step_duration(druid, is_diagonal(dx, dy))   # ground speed of the entered tile
             self._enter_tile(druid)
             return self._check_waypoint(), duration
+
+        if action in ACTION_GOTO_TARGETS or action in (ACTION_GOTO_ARENA, ACTION_ESCAPE):
+            step = self._macro_step(action)
+            if step is None:
+                return rewards.invalid_action, DECISION_MS
+            return self._apply_action(self.move_action(step))
 
         if action in ATTACK_SPELLS:
             spell = SPELLBOOK[ATTACK_SPELLS[action]]
@@ -373,6 +408,7 @@ class DruidHuntEnv:
         if target.alive:
             return reward
         exp, loot = self.economy.book_kill(target)
+        target.died_at = target.known_dead_at = self.time_ms
         self.kills += 1
         self.experience = self.economy.experience
         self._event("kill", f"{target.name} ginie! +{exp:.0f} exp, loot ~{loot} gp.")
@@ -447,18 +483,7 @@ class DruidHuntEnv:
         """First (dx, dy) of the shortest path to any goal on the druid's floor (other stairs avoided)."""
         if not goals:
             return None
-        druid = self.druid
-        key = (druid.z, tuple(sorted(goals)))
-        field = self._route_fields.get(key)
-        if field is None:
-            walkable = self.collision(druid.z).copy()
-            goal_set = set(goals)
-            for (x, y, z) in self.transitions:
-                if z == druid.z and (x, y) not in goal_set:
-                    walkable[y, x] = 1
-            field = distance_field(walkable, list(goals), self.config.diagonal_multiplier)
-            self._route_fields[key] = field
-        return self._free_step(field)
+        return self._free_step(self._route_field(goals))
 
     def _free_step(self, field):
         """Best neighbouring tile along `field` that is not blocked right now (walls, monsters)."""
@@ -489,6 +514,181 @@ class DruidHuntEnv:
         if step is None:
             return ACTION_WAIT
         return next(action for action, delta in MOVE_DELTAS.items() if delta == tuple(step))
+
+    # ----- hunting ground memory, respawn and macro moves --------------------- #
+
+    def _build_clusters(self):
+        """Group spawn points (monster homes) that lie close together on one floor."""
+        clusters = []
+        for index, monster in enumerate(self.monsters):
+            hx, hy, hz = monster.home
+            for cluster in clusters:
+                if cluster["z"] == hz and any(chebyshev(hx, hy, *self.monsters[j].home[:2]) <= CLUSTER_RADIUS
+                                              for j in cluster["members"]):
+                    cluster["members"].append(index)
+                    break
+            else:
+                clusters.append({"z": hz, "members": [index], "visited_ms": None})
+        for cluster in clusters:
+            homes = [self.monsters[j].home for j in cluster["members"]]
+            mx = sum(h[0] for h in homes) / len(homes)
+            my = sum(h[1] for h in homes) / len(homes)
+            cluster["x"], cluster["y"] = min(((h[0], h[1]) for h in homes),
+                                             key=lambda p: (p[0] - mx) ** 2 + (p[1] - my) ** 2)
+        return clusters
+
+    def believed_alive(self, cluster):
+        """Monsters the player expects at a spawn group: seen alive, or not known to be dead / respawned."""
+        druid, now = self.druid, self.time_ms
+        count = 0
+        for j in cluster["members"]:
+            m = self.monsters[j]
+            if m.z == druid.z and in_view(druid.x, druid.y, m.x, m.y):
+                count += 1 if m.alive else 0
+            elif m.known_dead_at is None or now - m.known_dead_at >= m.respawn_ms:
+                count += 1
+        return count
+
+    def _remember(self):
+        """Update what the player knows: visited spawn groups, monsters seen alive / dead, short history."""
+        druid, now = self.druid, self.time_ms
+        for cluster in self.clusters:
+            if cluster["z"] == druid.z and in_view(druid.x, druid.y, cluster["x"], cluster["y"]):
+                cluster["visited_ms"] = now
+        for m in self.monsters:
+            if m.z == druid.z and in_view(druid.x, druid.y, m.x, m.y):
+                if m.alive:
+                    m.known_dead_at = None
+                elif m.known_dead_at is None:
+                    m.known_dead_at = m.died_at
+        self._history.append((now, druid.hp, druid.mana, self.damage_taken))
+        while len(self._history) > 2 and now - self._history[1][0] >= DAMAGE_WINDOW_MS:
+            self._history.popleft()
+
+    def _respawn(self):
+        """Dead monsters return to their spawn after respawn_ms unless the druid sees the spawn tile (Tibia rule)."""
+        if not self.config.respawn:
+            return
+        druid, now = self.druid, self.time_ms
+        for m in self.monsters:
+            if m.alive or m.died_at is None or now - m.died_at < m.respawn_ms:
+                continue
+            hx, hy, hz = m.home
+            if hz == druid.z and in_view(druid.x, druid.y, hx, hy):
+                continue
+            if not self._is_free(hx, hy, hz, ignore=m):
+                continue
+            m.revive()
+            self.respawns += 1
+            self._event("info", f"{m.name} odradza się na spawnie ({hx}, {hy}, {hz}).")
+
+    def _after_step(self, z_before, danger_before):
+        """Respawns, memory and shaping for decisions the RL policy now owns (lure size, escapes)."""
+        self._respawn()
+        self._remember()
+        rewards = self.config.rewards
+        reward = 0.0
+        if not self.tactics.config.enabled:
+            # Each spawned monster counts once: losing aggro and pulling it again earns nothing
+            fresh = [m for m in self.aggressive_monsters() if not m.lured]
+            for m in fresh:
+                m.lured = True
+            reward += rewards.aggro_gain * len(fresh)
+            if danger_before and self.druid.z != z_before and self.druid.alive:
+                self.escapes_learned += 1
+                reward += rewards.escape_success
+                self._event("system", "Ucieczka schodami w niebezpieczeństwie (decyzja polityki).")
+        return reward
+
+    def target_slots(self, limit=TARGET_SLOTS):
+        """[(cluster, path_cost)] spawn groups on the druid's floor, nearest by walking cost."""
+        druid = self.druid
+        slots = []
+        for cluster in self.clusters:
+            if cluster["z"] != druid.z:
+                continue
+            field = self._route_field([(cluster["x"], cluster["y"])])
+            cost = float(field[druid.y, druid.x])
+            if cost != float("inf"):
+                slots.append((cluster, cost))
+        slots.sort(key=lambda item: item[1])
+        return slots[:limit]
+
+    def _route_field(self, goals):
+        druid = self.druid
+        key = (druid.z, tuple(sorted(goals)))
+        field = self._route_fields.get(key)
+        if field is None:
+            walkable = self.collision(druid.z).copy()
+            goal_set = set(goals)
+            for (x, y, z) in self.transitions:
+                if z == druid.z and (x, y) not in goal_set:
+                    walkable[y, x] = 1
+            field = distance_field(walkable, list(goals), self.config.diagonal_multiplier)
+            self._route_fields[key] = field
+        return field
+
+    def _macro_step(self, action):
+        druid = self.druid
+        if action in ACTION_GOTO_TARGETS:
+            slots = self.target_slots()
+            index = ACTION_GOTO_TARGETS.index(action)
+            if index >= len(slots):
+                return None
+            cluster = slots[index][0]
+            return self.step_toward([(cluster["x"], cluster["y"])])
+        if action == ACTION_GOTO_ARENA:
+            arena = self.tactics.nearest_zone("arena", druid.x, druid.y, druid.z)
+            return None if arena is None else self.step_toward([(arena["x"], arena["y"])])
+        return self.step_toward(self.escape_routes(druid.z))
+
+    def hunt_step(self):
+        """
+        Without a route: walk to the spawn group with the most expected monsters per walking cost and keep
+        that goal until reached (no flip-flopping). When nothing is expected alive, patrol to the group
+        visited longest ago - standing in view of a spawn would block its respawn (Tibia rule).
+        """
+        druid = self.druid
+        slots = self.target_slots(limit=None)
+        if not slots:
+            self._hunt_target = None
+            if any(c["z"] == druid.z for c in self.clusters):
+                return None
+            # Escaped to a floor without spawns: take the stairs back toward the floor with the most groups
+            floors = [c["z"] for c in self.clusters]
+            if not floors:
+                return None
+            home = max(set(floors), key=floors.count)
+            return self.step_toward(self.escape_routes(druid.z, toward=home))
+        costs = {id(c): cost for c, cost in slots}
+        target = self._hunt_target
+        if target is not None and (id(target) not in costs or costs[id(target)] < 3):
+            target = None                                   # reached or unreachable from this floor
+        if target is None:
+            alive = [(self.believed_alive(c) / (cost + 10.0), c) for c, cost in slots
+                     if cost >= 3 and self.believed_alive(c)]
+            if alive:
+                target = max(alive, key=lambda item: item[0])[1]
+            else:
+                far = [(c["visited_ms"] if c["visited_ms"] is not None else -1, c) for c, cost in slots if cost >= 3]
+                target = min(far, key=lambda item: item[0])[1] if far else None
+        self._hunt_target = target
+        if target is None:
+            return None
+        return self.step_toward([(target["x"], target["y"])])
+
+    def _memory_features(self):
+        druid, now = self.druid, self.time_ms
+        hp_trend = mana_trend = damage_rate = 0.0
+        if self._history:
+            past = next((h for h in reversed(self._history) if now - h[0] >= HISTORY_MS), self._history[0])
+            hp_trend = (druid.hp - past[1]) / druid.max_hp
+            mana_trend = (druid.mana - past[2]) / max(1, druid.max_mana)
+            oldest = self._history[0]
+            damage_rate = min(1.0, (self.damage_taken - oldest[3]) / druid.max_hp)
+        soon = sum(1 for m in self.monsters if not m.alive and m.known_dead_at is not None and m.z == druid.z
+                   and 0 <= m.respawn_ms - (now - m.known_dead_at) <= RESPAWN_SOON_MS)
+        return hp_trend, mana_trend, damage_rate, min(soon, 5) / 5.0
 
     def survival_action(self, heal_below, potion_below):
         """Deterministic safety layer used outside FIGHT: heal first, then mana."""
@@ -565,6 +765,7 @@ class DruidHuntEnv:
         if self._movement_blocker(tx, ty, tz) is None:
             old_z = druid.z
             druid.move_to(tx, ty, tz)
+            self.floor_changed_ms = self.time_ms
             self._event("move", f"Zmiana piętra: {old_z} -> {tz} ({'w dół' if tz > old_z else 'w górę'}).")
 
     def _check_waypoint(self):
@@ -589,7 +790,8 @@ class DruidHuntEnv:
             if self.config.use_utamo and not druid.utamo_active and druid.cast_utamo(now):
                 self._event("shield", f"Druid odnawia Utamo Vita. Mana: {druid.mana}/{druid.max_mana}.")
             reward += self._rod_auto_attack(now)
-            if any(m.alive and m.z == druid.z and chebyshev(m.x, m.y, druid.x, druid.y) <= 1 for m in self.monsters):
+            if any(m.z == druid.z and abs(m.x - druid.x) <= 1 and abs(m.y - druid.y) <= 1 and m.alive
+                   for m in self.monsters):
                 self.adjacent_ms += SERVER_TICK_MS
             reward += self._monsters_think(now)
         return reward
@@ -754,6 +956,9 @@ class DruidHuntEnv:
         if self.waypoints:
             return self.waypoints[0]
         z = self.config.floor
+        start = self._start_near_spawns(z)
+        if start is not None:
+            return start
         free = np.argwhere(self.collision(z) == 0)
         if len(free) == 0:
             raise ValueError("No walkable tile on the selected floor")
@@ -761,16 +966,37 @@ class DruidHuntEnv:
         y, x = min(free.tolist(), key=lambda c: chebyshev(c[1], c[0], cx, cy))
         return x, y, z
 
+    def _start_near_spawns(self, z):
+        """No route: a random tile 8-16 steps from the spawns of floor z, off the stairs, with a path to them."""
+        goals = [(int(sp[0]), int(sp[1])) for sp in self.config.spawns
+                 if int(sp[2]) == z and self._walkable_static(int(sp[0]), int(sp[1]), z)]
+        if not goals:
+            return None
+        walkable = self.collision(z).copy()
+        for (x, y, tz) in self.transitions:
+            if tz == z:
+                walkable[y, x] = 1
+        field = distance_field(walkable, goals, self.config.diagonal_multiplier)
+        for low, high in ((8, 16), (3, 30), (1, float("inf"))):
+            ys, xs = np.nonzero((field >= low) & (field <= high) & (walkable == 0))
+            if len(xs):
+                i = self.rng.randrange(len(xs))
+                return int(xs[i]), int(ys[i]), z
+        return None
+
     def _create_monsters(self):
         cfg = self.config
         druid = self.druid
         monsters = []
         taken = {druid.position}
-        for x, y, z, name in cfg.spawns:
+        for spawn in cfg.spawns:
+            x, y, z, name = spawn[:4]
             position = (int(x), int(y), int(z))
             if name not in self.monster_db or position in taken or not self._walkable_static(*position):
                 continue
-            monsters.append(Monster(self.monster_db.get(name), *position))
+            seconds = spawn[4] if len(spawn) > 4 else None
+            monsters.append(Monster(self.monster_db.get(name), *position,
+                                    respawn_ms=int(seconds * 1000) if seconds else cfg.respawn_ms))
             taken.add(position)
         if monsters or cfg.random_monster_count <= 0:
             return monsters
@@ -780,7 +1006,7 @@ class DruidHuntEnv:
                       if (x, y, druid.z) not in taken and chebyshev(x, y, druid.x, druid.y) >= 4]
         self.rng.shuffle(candidates)
         for x, y in candidates[: cfg.random_monster_count]:
-            monsters.append(Monster(template, x, y, druid.z))
+            monsters.append(Monster(template, x, y, druid.z, respawn_ms=cfg.respawn_ms))
         return monsters
 
     # ----- observation / info --------------------------------------------- #
@@ -821,6 +1047,11 @@ class DruidHuntEnv:
             tactical_state=self.tactics.state if self.tactics.config.enabled else None,
             arena=self._arena_vector(),
             orbit=self._orbit_vector(),
+            targets=[(c["x"] - druid.x, c["y"] - druid.y, cost, self.believed_alive(c),
+                      None if c["visited_ms"] is None else now - c["visited_ms"]) for c, cost in self.target_slots()],
+            memory=self._memory_features(),
+            escape=self._escape_vector(),
+            absolute_position=self.config.absolute_position,
             sd_runes=druid.sd_runes,
             rune_range=RUNE_RANGE,
             rod_equipped=rod is not None,
@@ -836,7 +1067,8 @@ class DruidHuntEnv:
                 ice_modifier=m.resistances.get("ice", 100),
                 earth_modifier=m.resistances.get("earth", 100),
                 step_ms=self._step_duration(m, False) or 0,
-                line_of_sight=m.z == druid.z and has_line_of_sight(grid, druid.x, druid.y, m.x, m.y),
+                line_of_sight=(m.z == druid.z and in_view(druid.x, druid.y, m.x, m.y)   # off-screen: not observed
+                               and has_line_of_sight(grid, druid.x, druid.y, m.x, m.y)),
                 death_modifier=m.resistances.get("death", 100),
                 rod_modifier=m.resistances.get(rod.element, 100) if rod else 100,
                 facing=m.facing,
@@ -884,6 +1116,12 @@ class DruidHuntEnv:
             return None
         return path_direction(field, druid.x, druid.y, self.config.diagonal_multiplier)
 
+    def _escape_vector(self):
+        routes = self.escape_routes(self.druid.z)
+        if not routes:
+            return None
+        return path_direction(self._route_field(routes), self.druid.x, self.druid.y, self.config.diagonal_multiplier)
+
     @staticmethod
     def _spell_cooldown_ratio(monster, now):
         """0 = a spell attempt is due now, 1 = a full interval away (aggressive casters only)."""
@@ -916,6 +1154,8 @@ class DruidHuntEnv:
             if self.tactics.pack_sizes else 0.0,
             "action": self.last_action,
             "controlled": self.last_controlled,
+            "respawns": self.respawns,
+            "learned_escapes": self.escapes_learned,
             "adjacent_pct": round(100.0 * self.adjacent_ms / self.time_ms, 1) if self.time_ms else 0.0,
             "heals": self.heals,
             "potions_per_hour": int(self.economy.per_hour(self.economy.used["great_mana_potion"], self.time_ms)),

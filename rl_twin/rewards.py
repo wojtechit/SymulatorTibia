@@ -29,6 +29,7 @@ class RewardConfig:
     invalid_action: float = -0.5
     waypoint_reached: float = 2.0
     lure_bonus: float = 5.0         # per monster brought into the arena (LURE/PULL -> FIGHT)
+    aggro_gain: float = 1.0         # without the tactics automat: per monster newly following (learned luring)
     aoe_missed: float = -2.0        # single-target attack while Avalanche would hit >= aoe_min_targets
     aoe_min_targets: int = 3
     escape_success: float = 2.0     # emergency floor change completed alive

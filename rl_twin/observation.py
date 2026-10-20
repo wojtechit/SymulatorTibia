@@ -19,18 +19,25 @@ CLUSTER_NORMALIZER = 5    # avalanche_best_hits saturates at this many monsters
 TACTICAL_STATES = ("lure", "pull", "fight", "escape", "recover", "return")
 STEP_MS_NORMALIZER = 1000.0
 MODIFIER_NORMALIZER = 200.0
+MONSTER_SLOTS = 4         # nearest visible monsters described one by one (pack awareness)
+TARGET_SLOTS = 4          # spawn groups on the floor, nearest by walking cost (route choice)
+TARGET_DISTANCE = 50.0    # target dx/dy saturate at this many tiles
+TARGET_PATH = 150.0       # target path cost saturates here
+TARGET_AGE_MS = 120_000   # "time since visited" saturates at 2 minutes
 
 ACTION_NAMES = [
     "up", "down", "left", "right",
     "up_left", "up_right", "down_left", "down_right",
     "exori_frigo", "exori_tera", "heal", "mana_potion", "wait",
     "use_sd", "use_avalanche",
+    *[f"goto_target_{k}" for k in range(TARGET_SLOTS)], "goto_arena", "escape_stairs",
 ]
 ACTION_LABELS_PL = [
     "Góra", "Dół", "Lewo", "Prawo",
     "Ukos ↖", "Ukos ↗", "Ukos ↙", "Ukos ↘",
     "Exori Frigo (lód)", "Exori Tera (ziemia)", "Exura Gran", "Mikstura many", "Czekaj",
     "Sudden Death (runa)", "Avalanche (runa)",
+    *[f"Idź do grupy spawnów {k + 1}" for k in range(TARGET_SLOTS)], "Idź na arenę", "Ucieczka schodami",
 ]
 
 SCALAR_FEATURES = [
@@ -50,6 +57,10 @@ SCALAR_FEATURES = [
     "cooldown_avalanche", "avalanche_runes_left", "avalanche_best_hits", "waypoint_floor_delta",
     "state_lure", "state_pull", "state_fight", "state_escape", "state_recover", "state_return",
     "in_arena", "arena_dx", "arena_dy", "orbit_dx", "orbit_dy",
+    *[f"m{k}_{f}" for k in range(MONSTER_SLOTS) for f in ("dx", "dy", "hp", "adjacent", "threat")],
+    *[f"t{k}_{f}" for k in range(TARGET_SLOTS) for f in ("dx", "dy", "path", "alive", "age")],
+    "hp_trend", "mana_trend", "damage_rate", "respawn_soon",
+    "escape_dx", "escape_dy", "escape_path",
 ]
 _WINDOW = [(dx, dy) for dy in range(-VIEW_RADIUS, VIEW_RADIUS + 1)
            for dx in range(-VIEW_RADIUS, VIEW_RADIUS + 1)]
@@ -109,6 +120,10 @@ class GameSnapshot:
     tactical_state: str = None     # tactics.STATES value, None when the hybrid controller is off
     arena: tuple = None            # (dx, dy, inside) toward the nearest arena centre
     orbit: tuple = None            # (dx, dy) unit tangent of the nearest orbit circle
+    targets: list = None           # [(dx, dy, path_cost, believed_alive, ms_since_visit)] nearest spawn groups
+    memory: tuple = None           # (hp_trend, mana_trend, damage_rate, respawn_soon) short-term history
+    escape: tuple = None           # (dx, dy, path_cost) first step toward the nearest stairs / hole
+    absolute_position: bool = True # False: player_x / player_y are zeroed (policy does not memorise one map)
 
 
 def _visible(snap, m):
@@ -124,8 +139,9 @@ def encode_observation(snap):
     nearest = min(visible, key=lambda m: (chebyshev(px, py, m.x, m.y), m.hp_ratio), default=None)
     cds = snap.cooldown_ratios
 
-    obs[0] = px / max(1, snap.cols - 1)
-    obs[1] = py / max(1, snap.rows - 1)
+    if snap.absolute_position:
+        obs[0] = px / max(1, snap.cols - 1)
+        obs[1] = py / max(1, snap.rows - 1)
     obs[2] = snap.player_z / 15.0
     obs[3] = snap.hp_ratio
     obs[4] = snap.mana_ratio
@@ -194,6 +210,34 @@ def encode_observation(snap):
         obs[59] = np.clip(snap.arena[1] / VIEW_RANGE_Y, -1, 1)
     if snap.orbit is not None:
         obs[60], obs[61] = snap.orbit
+
+    i = 62
+    # Pack: the nearest visible monsters one by one
+    ordered = sorted(visible, key=lambda m: (chebyshev(px, py, m.x, m.y), m.hp_ratio))
+    for k in range(MONSTER_SLOTS):
+        if k < len(ordered):
+            m = ordered[k]
+            ddx, ddy = m.x - px, m.y - py
+            aligned = ddx == 0 or ddy == 0 or abs(ddx) == abs(ddy)
+            obs[i: i + 5] = (ddx / VIEW_RANGE_X, ddy / VIEW_RANGE_Y, m.hp_ratio,
+                             1.0 if max(abs(ddx), abs(ddy)) <= 1 else 0.0,
+                             1.0 if m.has_aoe and aligned else 0.0)
+        i += 5
+    # Spawn groups: where the next pack probably is (memory of what was already killed)
+    for k in range(TARGET_SLOTS):
+        if snap.targets is not None and k < len(snap.targets):
+            tdx, tdy, cost, alive, age = snap.targets[k]
+            obs[i: i + 5] = (np.clip(tdx / TARGET_DISTANCE, -1, 1), np.clip(tdy / TARGET_DISTANCE, -1, 1),
+                             1.0 if cost == float("inf") else min(cost, TARGET_PATH) / TARGET_PATH,
+                             min(alive, CLUSTER_NORMALIZER) / CLUSTER_NORMALIZER,
+                             1.0 if age is None else min(age, TARGET_AGE_MS) / TARGET_AGE_MS)
+        i += 5
+    if snap.memory is not None:
+        obs[i: i + 4] = np.clip(snap.memory, -1, 1)
+    i += 4
+    if snap.escape is not None:
+        step_x, step_y, cost = snap.escape
+        obs[i: i + 3] = (step_x, step_y, 1.0 if cost == float("inf") else min(cost, PATH_NORMALIZER) / PATH_NORMALIZER)
 
     # Local window, out-of-bounds counts as blocked
     r = VIEW_RADIUS
