@@ -3,3 +3,5 @@ __pycache__/
 .venv/
 sprites/
 data/cache/
+stream_model.npz
+stream_model.pt

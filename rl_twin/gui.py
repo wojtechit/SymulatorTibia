@@ -116,7 +116,8 @@ TOOL_WAYPOINT = "waypoint"
 TOOL_MONSTER = "monster"
 TOOL_OBSTACLE = "obstacle"
 TOOL_MOVE = "move"
-CONTROL_KEYBOARD, CONTROL_RULES, CONTROL_AGENT = "keyboard", "rules", "agent"
+CONTROL_KEYBOARD, CONTROL_RULES, CONTROL_AGENT, CONTROL_LIVE = "keyboard", "rules", "agent", "live"
+STREAM_MODEL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "stream_model")
 LAYER_WALLS, LAYER_SPAWNS, LAYER_WAYPOINTS, LAYER_ZONES, LAYER_HEATMAP = "walls", "spawns", "waypoints", "zones", "heatmap"
 LAYERS = (LAYER_WALLS, LAYER_SPAWNS, LAYER_WAYPOINTS, LAYER_ZONES, LAYER_HEATMAP)
 LAYER_LABELS_PL = {LAYER_WALLS: "Ściany", LAYER_SPAWNS: "Spawny", LAYER_WAYPOINTS: "Trasa",
@@ -259,6 +260,11 @@ class GridCanvas(QGraphicsView):
         self.floor_label = QLabel(self)
         self.floor_label.setStyleSheet("background: rgba(0,0,0,170); color: #ffffff; padding: 3px 8px; "
                                        "border-radius: 4px; font-weight: bold;")
+        self.stream_label = QLabel(self)          # big live-learning stats for the stream (top-left)
+        self.stream_label.setStyleSheet("background: rgba(0,0,0,185); color: #ffffff; padding: 8px 12px; "
+                                        "border-radius: 8px; font-size: 15pt; font-weight: bold;")
+        self.stream_label.setTextFormat(Qt.RichText)
+        self.stream_label.hide()
         self._overlay_buffer = None
         self._waypoint_items = []
         self._spawn_items = {}
@@ -346,6 +352,16 @@ class GridCanvas(QGraphicsView):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._update_floor_label()
+
+    def set_stream_text(self, html_text):
+        if not html_text:
+            self.stream_label.hide()
+            return
+        self.stream_label.setText(html_text)
+        self.stream_label.adjustSize()
+        self.stream_label.move(10, 10)
+        self.stream_label.show()
+        self.stream_label.raise_()
 
     # ----- undo / redo (Ctrl+Z / Ctrl+Y) ----------------------------------- #
 
@@ -1300,6 +1316,7 @@ class MainWindow(QMainWindow):
         self.visual_clock_ms = 0.0
         self.job = None
         self.grounds = []
+        self.live = {"episodes": 0, "rewards": [], "kills": [], "deaths": [], "exp_h": [], "last_overlay": 0.0}
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
         self._preview_timer.setInterval(150)
@@ -1910,7 +1927,8 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         self.control_combo = QComboBox()
         for label, key in (("Steruje: klawiatura", CONTROL_KEYBOARD), ("Steruje: reguły (bez modelu)", CONTROL_RULES),
-                           ("Steruje: agent (model RL)", CONTROL_AGENT)):
+                           ("Steruje: agent (model RL)", CONTROL_AGENT),
+                           ("Steruje: AI uczy się na żywo (stream)", CONTROL_LIVE)):
             self.control_combo.addItem(label, key)
         self.control_combo.setCurrentIndex(1)
         self.control_combo.setToolTip("Reguły: skryptowa walka (leczenie, unik fal/belek, Avalanche przy 3+, "
@@ -1927,6 +1945,25 @@ class MainWindow(QMainWindow):
         row.addWidget(QLabel("Prędkość:"))
         row.addWidget(self.speed_combo)
         layout.addLayout(row)
+        live = QHBoxLayout()
+        self.stream_button = QPushButton("🎥 Tryb stream")
+        self.stream_button.setObjectName("export")
+        self.stream_button.setToolTip("Ustawia naukę na żywo: druid chodzi w kółko po trasie, potwory szybko się "
+                                      "odradzają, model uczy się z każdej decyzji, epizody startują same, "
+                                      "postęp zapisuje się do stream_model.npz")
+        self.stream_button.clicked.connect(self.start_stream_mode)
+        self.live_teacher_input = self._spin(0, 1000, 15)
+        self.live_teacher_input.setPrefix("nauczyciel ")
+        self.live_teacher_input.setSuffix(" ep.")
+        self.live_teacher_input.setToolTip("Przez pierwsze N epizodów część decyzji podejmują reguły (malejąco) - "
+                                           "na streamie od razu widać sensowną walkę, a model uczy się z przykładów")
+        self.live_save_input = self._spin(1, 1000, 10)
+        self.live_save_input.setPrefix("zapis co ")
+        self.live_save_input.setSuffix(" ep.")
+        live.addWidget(self.stream_button)
+        live.addWidget(self.live_teacher_input)
+        live.addWidget(self.live_save_input)
+        layout.addLayout(live)
         keys = QLabel("Klawisze: W/A/S/D lub strzałki - ruch, Q/E/Z/C - ukosy, 1 - Exori Frigo, "
                       "2 - Exori Tera, 3 - Exura Gran, 4 - mikstura many, 5 - runa SD, 6 - Avalanche")
         keys.setObjectName("hint")
@@ -1965,6 +2002,12 @@ class MainWindow(QMainWindow):
             ("state", "Stan taktyczny:"), ("tactics", "Ucieczki / pulle / paczka / respawny:"),
             ("waste", "Marnotrawstwo:"), ("safety", "Bezpieczeństwo:"),
         ])
+        self.live_plot = RewardPlot()
+        self.live_plot.setToolTip("Nagroda kolejnych epizodów nauki na żywo (jasna linia = średnia z 50)")
+        self.live_plot.setVisible(False)
+        layout.addWidget(self.live_plot)
+        self.control_combo.currentIndexChanged.connect(
+            lambda *_: self.live_plot.setVisible(self.control == CONTROL_LIVE))
         return page
 
     def _build_training_page(self):
@@ -2229,7 +2272,7 @@ class MainWindow(QMainWindow):
     def _new_manual_episode(self):
         config = self.build_config()
         self._warn_if_no_walls(config)
-        if self.control != CONTROL_AGENT:
+        if self.control not in (CONTROL_AGENT, CONTROL_LIVE):
             # Keyboard / rules: idle 100 ms waits are decisions too, so the training limit would end it early
             config.max_steps = 10 ** 9
         try:
@@ -2252,6 +2295,7 @@ class MainWindow(QMainWindow):
         return True
 
     def reset_manual(self, log=True):
+        self.canvas.set_stream_text("")
         self.visual_timer.stop()
         self.manual_running = False
         self.env = None
@@ -2272,14 +2316,21 @@ class MainWindow(QMainWindow):
             env = self.env
             if env is None or env.time_ms >= self.visual_clock_ms:
                 break
-            if self.control == CONTROL_AGENT:
+            if self.control == CONTROL_LIVE:
+                action = self._live_action(env)
+            elif self.control == CONTROL_AGENT:
                 action = self.agent.act(self.obs, greedy=True)
             elif self.control == CONTROL_RULES:
                 action = rule_action(env)
             else:
                 action, self.pending_action = self.pending_action, None
                 action = ACTION_WAIT if action is None else action
+            previous = self.obs
             self.obs, reward, terminated, truncated, info = env.step(action)
+            if self.control == CONTROL_LIVE:
+                # Learn from what was executed (the automat / teacher steps are demonstrations)
+                executed = info.get("action")
+                self.agent.observe(previous, action if executed is None else executed, reward, self.obs, terminated)
             self._log_env_events()
             self._update_manual_status(info, reward, info.get("action", action))   # executed action (automat may override)
             if terminated or truncated:
@@ -2287,12 +2338,92 @@ class MainWindow(QMainWindow):
                 break
         if self.env is not None:
             self.canvas.sync_entities(self.env)
+            if self.control == CONTROL_LIVE:
+                self._update_stream_overlay()
+
+    # ----- live learning (stream) ------------------------------------------- #
+
+    def _live_action(self, env):
+        """Agent's exploring action; during the first teacher episodes the rules take a decreasing share."""
+        teacher = self.live_teacher_input.value()
+        guide = max(0.0, 1.0 - self.live["episodes"] / teacher) if teacher else 0.0
+        if guide and self.agent.rng.random() < guide:
+            return rule_action(env)
+        return self.agent.act(self.obs)
+
+    def _update_stream_overlay(self, force=False):
+        import time
+        now = time.monotonic()
+        if not force and now - self.live["last_overlay"] < 0.25:
+            return
+        self.live["last_overlay"] = now
+        env, live = self.env, self.live
+        last = lambda key, n=20: live[key][-n:]
+        mean = lambda values: sum(values) / len(values) if values else 0.0
+        info = env._info() if env is not None else {}
+        teacher = self.live_teacher_input.value()
+        guide = max(0.0, 1.0 - live["episodes"] / teacher) if teacher else 0.0
+        state = STATE_LABELS_PL.get(info.get("tactical_state"), "") if info.get("tactical_state") else ""
+        text = (
+            f"<span style='color:#69f0ae'>🧠 AI uczy się grać w Tibię</span><br>"
+            f"Epizod <b>{live['episodes'] + 1}</b> &nbsp;•&nbsp; decyzje {self.agent.total_steps:,} &nbsp;•&nbsp; "
+            f"eksploracja ε {self.agent.epsilon:.2f}" + (f" &nbsp;•&nbsp; nauczyciel {guide * 100:.0f}%" if guide else "")
+            + f"<br>Teraz: HP {info.get('hp', 0)} &nbsp; zabite {info.get('kills', 0)} &nbsp; "
+            f"exp/h {info.get('exp_per_hour', 0):,.0f}" + (f" &nbsp; [{state}]" if state else "")
+            + f"<br><span style='color:#90caf9'>Ostatnie 20 ep.: nagroda {mean(last('rewards')):,.0f} &nbsp; "
+            f"zabite {mean(last('kills')):.1f} &nbsp; exp/h {mean(last('exp_h')):,.0f} &nbsp; "
+            f"zgony {mean(last('deaths')) * 100:.0f}%</span>")
+        self.canvas.set_stream_text(text.replace(",", " "))       # 1 234 567 reads better than 1,234,567
+
+    def start_stream_mode(self):
+        """One click for the stream: live learning on the route in a loop, fast respawn, big stats."""
+        if self.training:
+            return
+        self.reset_manual(log=False)
+        self.manual_radio.setChecked(True)
+        self.control_combo.setCurrentIndex(self.control_combo.findData(CONTROL_LIVE))
+        self.respawn_input.setValue(min(self.respawn_input.value() or 20, 20))
+        if self.speed_combo.currentData() < 2:
+            self.speed_combo.setCurrentIndex(self.speed_combo.findData(4.0))
+        self._set_layer(LAYER_HEATMAP, True)
+        if os.path.isfile(STREAM_MODEL + ".npz") and self.agent.total_steps == 0:
+            try:
+                self.agent.load_policy(STREAM_MODEL + ".npz")
+                self.log("system", "Stream: wczytano zapisany postęp nauki (stream_model.npz).")
+            except (OSError, ValueError, KeyError) as exc:
+                self.log("warn", f"Stream: nie udało się wczytać stream_model.npz ({exc}) - nauka od zera.")
+        route = len(self.canvas.waypoints)
+        self.log("system", f"Stream: nauka na żywo, respawn {self.respawn_input.value()} s, prędkość "
+                           f"{self.speed_combo.currentText()}, " + (f"trasa {route} punktów w pętli." if route else
+                           "bez trasy - druid poluje po grupach spawnów."))
+        self.toggle_manual()
+
+    def _finish_live_episode(self, info):
+        live = self.live
+        live["episodes"] += 1
+        self.agent.episodes_trained += 1
+        live["rewards"].append(info["episode_reward"])
+        live["kills"].append(info["kills"])
+        live["deaths"].append(1.0 if info["hp"] <= 0 else 0.0)
+        live["exp_h"].append(info["exp_per_hour"])
+        for key in ("rewards", "kills", "deaths", "exp_h"):
+            del live[key][:-500]
+        self.live_plot.add([info["episode_reward"]])
+        if live["episodes"] % self.live_save_input.value() == 0:
+            try:
+                self.agent.export_policy(STREAM_MODEL, {"env_config": self.build_config().to_dict()})
+                self.log("train", f"Stream: zapisano postęp po {live['episodes']} epizodach (stream_model.npz).")
+            except (OSError, ValueError) as exc:
+                self.log("warn", f"Stream: zapis modelu nieudany: {exc}")
 
     def _end_manual_episode(self, info):
         self.canvas.sync_entities(self.env)
         self.log("system", f"Koniec epizodu: nagroda {info['episode_reward']:.1f}, zabite {info['kills']}, "
                            f"decyzje {info['steps']}, czas {format_game_time(info['time_ms'])}.")
-        if self.control == CONTROL_AGENT:
+        if self.control == CONTROL_LIVE:
+            self._finish_live_episode(info)
+            self._new_manual_episode()
+        elif self.control == CONTROL_AGENT:
             self._new_manual_episode()
         else:
             self.visual_timer.stop()

@@ -112,6 +112,29 @@ Nagrody: `lure_bonus` za każdy potwór doprowadzony do walki, `aoe_missed` za p
 
 Skrypty (`rl_twin/scripts.py`, „Eksport/Import skryptu”): `.json` (trasa z typami + strefy) albo `.txt` z liniami `Node (x, y, z)` / `Ladder` / `Hole` we współrzędnych świata (`Świat X/Y pola [0,0]`, ustawiane automatycznie z minimapy klienta). Import przyjmuje każdą linię z trzema liczbami.
 
+## Tryb stream: AI uczy się na żywo
+
+Przycisk **🎥 Tryb stream** (panel trybu ręcznego) albo sterowanie „AI uczy się na żywo”:
+- druid chodzi **w pętli po punktach trasy** (bez trasy: poluje po grupach spawnów);
+- potwory odradzają się co 20 s (pole „Respawn potworów”);
+- model **uczy się z każdej decyzji** na oczach widzów (DQN z eksploracją ε);
+- po śmierci albo limicie decyzji („Limit decyzji” = długość epizodu) epizod startuje sam.
+
+Na mapie jest duża nakładka:
+- epizod, decyzje, ε, udział nauczyciela;
+- bieżące HP, zabicia, exp/h i stan taktyki;
+- średnie z ostatnich 20 epizodów: nagroda, zabicia, exp/h, % zgonów.
+
+Pod paskami HP/many rysuje się wykres nagrody.
+
+- **Nauczyciel N ep.:** przez pierwsze N epizodów część decyzji (malejąco do 0) podejmują
+  reguły, więc od początku widać sensowną walkę, a model uczy się z tych przykładów.
+- **Zapis co N ep.:** postęp trafia do `stream_model.npz` w katalogu projektu. Kolejne
+  „Tryb stream” wczytuje go automatycznie, więc nauka trwa między streamami.
+
+Sugerowany setup: łowisko z listy, trasa w kółko, automat taktyczny włączony (trasa i lure
+po stronie automatu, model uczy się walki), prędkość x4, Widok → Tryb streamera.
+
 ## Faza 10: zachowanie potworów z Canary
 
 Importer (`rl_twin.canary_monsters`) czyta z plików Lua Canary, poza statystykami, także
